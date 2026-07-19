@@ -1,0 +1,12 @@
+# Core computer vision and machine learning libraries used for face, hand, and emotion detection.
+opencv-python
+mediapipe>=0.10.9
+numpy<2
+tensorflow
+
+# Used to draw the reaction captions on top of the bundled font.
+Pillow
+
+# Used to fetch real cat and dog reaction media, and to talk to the optional OpenAI API for live captions.
+requests
+openai
