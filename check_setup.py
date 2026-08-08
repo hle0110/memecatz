@@ -130,7 +130,7 @@ def check_caption_engine():
 
     engine = CaptionEngine()
     if engine.enabled:
-        print("OPENAI_API_KEY detected, live machine learning caption generation enabled")
+        print("OPENAI_API_KEY detected, live caption generation enabled")
     else:
         print("no OPENAI_API_KEY set, using the built-in static caption bank (this is fine, app still works)")
     return True
@@ -145,7 +145,7 @@ def check_vision_mood():
 
     analyzer = VisionMoodAnalyzer()
     if analyzer.enabled:
-        print("OPENAI_API_KEY detected, vision-based mood boost enabled (richer nuance from a vision-capable model)")
+        print("OPENAI_API_KEY detected, vision mood boost enabled (adds extra nuance to mood detection)")
     else:
         print("no OPENAI_API_KEY set, vision mood boost disabled (this is optional and fine, uses the same key as captions)")
     return True

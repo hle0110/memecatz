@@ -2,7 +2,7 @@
 Everything about getting a real reaction on screen: fetching/caching real
 cat or dog content from Giphy (mood-matched) and a zero-setup real-photo
 backup (The Cat API / Dog CEO API), picking one for the current mood, and
-rendering the caption onto it. No generated, drawn, or AI-created imagery
+rendering the caption onto it. No generated, drawn, or fake imagery
 is ever used as a substitute.
 """
 
@@ -64,13 +64,12 @@ def query_for_mood(mood_tag, animal="cat"):
 class AnimalReactionDataset:
     """
     Real cat/dog reaction content, sourced live from two public APIs (no
-    bundled, generated, or AI-created imagery at any point):
-
-    - Giphy's search API, queried per detected mood (e.g. "confused cat"),
-      for mood-matched reaction GIFs. Requires a free Giphy API key (optional).
-    - A real-photo backup (The Cat API for cats, the Dog CEO API for dogs)
-      when Giphy isn't configured/reachable or has nothing for a given mood.
-      Works out of the box with zero signup, though it isn't mood-matched.
+    bundled, generated, or fake imagery at any point). Giphy's search API is
+    queried per detected mood (e.g. "confused cat") for mood-matched reaction
+    GIFs, and requires a free Giphy API key (optional). A real-photo backup
+    (The Cat API for cats, the Dog CEO API for dogs) is used when Giphy isn't
+    configured or reachable, or has nothing for a given mood; it works out of
+    the box with zero signup, though it isn't mood-matched.
 
     Everything downloaded is cached locally so repeat launches don't re-fetch,
     and every network call degrades gracefully: no key, no internet, or a

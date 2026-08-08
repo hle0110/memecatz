@@ -125,7 +125,7 @@ class CaptionEngine:
             parsed = self._parse_caption(raw_text)
             if parsed is None:
                 return _static_caption(primary)
-            parsed["source"] = "ml"
+            parsed["source"] = "live"
             self._cache[cache_key] = {"top": parsed["top"], "bottom": parsed["bottom"]}
             return parsed
         except Exception:

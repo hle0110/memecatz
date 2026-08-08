@@ -319,10 +319,10 @@ def main():
     print("reactions:", reaction_source.describe_source())
 
     caption_engine = CaptionEngine(api_key=args.openai_key)
-    print("captions:", "live text-generation model" if caption_engine.enabled else "static fallback bank (set OPENAI_API_KEY to enable live ML captions)")
+    print("captions:", "live text-generation model" if caption_engine.enabled else "static fallback bank (set OPENAI_API_KEY to enable live captions)")
 
     vision_analyzer = VisionMoodAnalyzer(api_key=args.openai_key)
-    print("vision mood boost:", "enabled (richer nuance from a vision-capable model)" if vision_analyzer.enabled
+    print("vision mood boost:", "enabled (adds extra nuance to mood detection)" if vision_analyzer.enabled
           else "disabled (set OPENAI_API_KEY to enable it, same key used for captions)")
 
     identity_manager = FaceIdentityManager(PROFILES_DIR)
