@@ -11,7 +11,7 @@ Watches your face and hands, reads your mood, and shows a real cat or dog reacti
 
 ## Getting started
 
-Install Python 3.9 to 3.12. Python 3.13 is not recommended yet, mediapipe has a bug on it that can stop the camera view from loading. Run the launcher: `./run.sh` on Mac/Linux, `run.bat` on Windows, or `python run.py` anywhere. First run takes a minute to set up, every run after that is instant.
+Install Python 3.9 to 3.12. Python 3.13 and 3.14 are not recommended yet, mediapipe does not officially support them and the camera view can fail to load. Run the launcher: `./run.sh` on Mac/Linux, `run.bat` on Windows, or `python run.py` anywhere. First run takes a minute to set up, every run after that is instant.
 
 A free Giphy key gets mood matched reactions, and a free OpenAI key turns on live captions. Both optional. Set GIPHY_API_KEY and OPENAI_API_KEY, or pass `--giphy-key` and `--openai-key`. Use `--animal dog` for dog reactions. Run `python check_setup.py` to test your install.
 

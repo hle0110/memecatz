@@ -1,4 +1,5 @@
 # Core libraries used for face, hand, and emotion detection.
+# mediapipe only officially supports Python 3.9 to 3.12 right now, not 3.13 or 3.14.
 opencv-python>=4.8,<5
 mediapipe>=0.10.9,<0.11
 numpy<2
