@@ -15,10 +15,32 @@ import numpy as np
 import mediapipe as mp
 import requests
 
-try:
-    import tensorflow as tf
-except ImportError:
-    tf = None  # only EmotionDetector needs this; FaceAnalyzer/HandGestureRecognizer must still work without it
+def _load_tflite_interpreter():
+    """
+    The emotion CNN only needs a TFLite interpreter. ai-edge-litert is the small
+    maintained one (about 15MB, works on Mac, Windows and Linux). tflite-runtime
+    and tensorflow are accepted too if either is already installed. Only
+    EmotionDetector needs this, FaceAnalyzer and HandGestureRecognizer must keep
+    working without any of them.
+    """
+    try:
+        from ai_edge_litert.interpreter import Interpreter
+        return Interpreter
+    except ImportError:
+        pass
+    try:
+        from tflite_runtime.interpreter import Interpreter
+        return Interpreter
+    except ImportError:
+        pass
+    try:
+        import tensorflow
+        return tensorflow.lite.Interpreter
+    except ImportError:
+        return None
+
+
+TFLiteInterpreter = _load_tflite_interpreter()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))          # project root (this file lives at the top level)
 ASSETS_DIR = os.path.join(BASE_DIR, "assets")                    # bundled with the code
@@ -53,8 +75,8 @@ EMOTION_MODEL_PATH = os.path.join(ASSETS_DIR, "emotion_model_quantized.tflite")
 
 class EmotionDetector:
     def __init__(self, model_path=EMOTION_MODEL_PATH):
-        if tf is None:
-            raise ImportError("tensorflow is required for the emotion CNN (pip install tensorflow)")
+        if TFLiteInterpreter is None:
+            raise ImportError("a TFLite runtime is required for the emotion CNN (pip install ai-edge-litert)")
         if not os.path.isfile(model_path):
             raise FileNotFoundError(f"emotion model not found at {model_path}")
 
@@ -63,7 +85,7 @@ class EmotionDetector:
         if self.face_cascade.empty():
             raise RuntimeError("failed to load the haar cascade face detector")
 
-        self.interpreter = tf.lite.Interpreter(model_path=model_path)
+        self.interpreter = TFLiteInterpreter(model_path=model_path)
         self.interpreter.allocate_tensors()
         self.input_details = self.interpreter.get_input_details()
         self.output_details = self.interpreter.get_output_details()

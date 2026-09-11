@@ -25,4 +25,4 @@ Your webcam feed stays on your machine and is never uploaded anywhere. The only 
 
 ## License
 
-MIT, see LICENSE. Built with OpenCV, MediaPipe, and TensorFlow.
+MIT, see LICENSE. Built with OpenCV, MediaPipe, and LiteRT.

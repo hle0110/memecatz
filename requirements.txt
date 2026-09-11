@@ -3,7 +3,12 @@
 opencv-python>=4.8,<5
 mediapipe>=0.10.9,<0.11
 numpy<2
-tensorflow>=2.13,<3
+
+# Runs the bundled emotion model. ai-edge-litert is about 15MB and covers
+# Mac, Windows and Linux. Python 3.9 has no wheel for it, so it falls back to
+# tensorflow there, which is much larger but works.
+ai-edge-litert>=2.0,<3; python_version >= "3.10"
+tensorflow>=2.13,<3; python_version < "3.10"
 
 # Used to draw the reaction captions on top of the bundled font.
 Pillow>=10,<12

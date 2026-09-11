@@ -22,22 +22,22 @@ def check_cascade():
 
 def check_emotion_model():
     try:
-        import tensorflow as tf
-    except ImportError as error:
-        print(f"tensorflow import failed: {error}")
-        return False
-
-    try:
-        from vision import EMOTION_MODEL_PATH as model_path
+        from vision import EMOTION_MODEL_PATH as model_path, TFLiteInterpreter
     except ImportError as error:
         print(f"vision import failed: {error}")
         return False
+
+    if TFLiteInterpreter is None:
+        print("no TFLite runtime found, install one with: pip install ai-edge-litert")
+        return False
+
+    print(f"tflite runtime: {TFLiteInterpreter.__module__.split('.')[0]}")
 
     if not os.path.isfile(model_path):
         print(f"model file missing at {model_path}")
         return False
 
-    interpreter = tf.lite.Interpreter(model_path=model_path)
+    interpreter = TFLiteInterpreter(model_path=model_path)
     interpreter.allocate_tensors()
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
