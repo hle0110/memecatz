@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MemeCatz</title>
+<meta name="description" content="Your face, but a cat says it better. Real cat and dog reactions matched to your expression, live in your browser.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <h1>MemeCatz</h1>
+  <p class="tagline">Your face. Their reaction. Live. From real cats and dogs.</p>
+</header>
+
+<main>
+  <div id="stage" class="stage">
+    <div class="panel">
+      <video id="webcam" playsinline muted></video>
+      <div class="label">you</div>
+    </div>
+
+    <div class="panel">
+      <img id="reaction" class="reaction" alt="a real cat or dog reacting">
+      <img id="reaction-next" class="reaction" alt="">
+      <div id="placeholder" class="placeholder">press start</div>
+      <div class="caption">
+        <span id="cap-top" class="cap-top"></span>
+        <span id="cap-bottom" class="cap-bottom"></span>
+      </div>
+      <div class="label">them</div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="start">Start camera</button>
+    <button id="recalibrate" disabled>Recalibrate</button>
+    <label for="animal">Reaction</label>
+    <select id="animal">
+      <option value="cat">cats</option>
+      <option value="dog">dogs</option>
+    </select>
+    <label for="sensitivity">Sensitivity</label>
+    <input id="sensitivity" type="range" min="0.6" max="3" step="0.1" value="1.6">
+    <span id="sens-value" class="sens-value">1.6</span>
+    <button id="toggle-debug">Show detail</button>
+  </div>
+
+  <pre id="debug" class="debug hidden"></pre>
+
+  <p id="status" class="status">Your camera stays on your device. Nothing is uploaded.</p>
+  <p id="mood" class="mood"></p>
+</main>
+
+<section class="about">
+  <h2>What it does</h2>
+  <p>
+    It watches your face and hands, works out your mood, and shows a real cat or dog
+    reaction next to your webcam with a caption. Give it a second to calibrate when
+    you start, then pull a face. Every reaction is a real photo fetched live, never
+    generated or drawn.
+  </p>
+
+  <h2>Privacy</h2>
+  <p>
+    Everything runs inside this page on your own machine. The video never leaves your
+    device and nothing is recorded or uploaded. The only network requests are to fetch
+    the cat and dog photos.
+  </p>
+
+  <h2>Also available as a desktop app</h2>
+  <p>
+    The original version runs locally in Python with a few extra features, including
+    mood matched reactions and generated captions when you supply your own keys.
+    <a href="https://github.com/hle0110/memecatz">Source and downloads on GitHub</a>.
+  </p>
+</section>
+
+<footer>
+  <p>MIT licensed. Built with MediaPipe, The Cat API and the Dog CEO API.</p>
+</footer>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
