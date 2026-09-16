@@ -18,6 +18,7 @@
   <div id="stage" class="stage">
     <div class="panel">
       <video id="webcam" playsinline muted></video>
+      <canvas id="overlay" class="overlay"></canvas>
       <div class="label">you</div>
     </div>
 
@@ -49,26 +50,11 @@
 
   <pre id="debug" class="debug hidden"></pre>
 
-  <p id="status" class="status">Your camera stays on your device. Nothing is uploaded.</p>
+  <p id="status" class="status"></p>
   <p id="mood" class="mood"></p>
 </main>
 
 <section class="about">
-  <h2>What it does</h2>
-  <p>
-    It watches your face and hands, works out your mood, and shows a real cat or dog
-    reaction next to your webcam with a caption. Give it a second to calibrate when
-    you start, then pull a face. Every reaction is a real photo fetched live, never
-    generated or drawn.
-  </p>
-
-  <h2>Privacy</h2>
-  <p>
-    Everything runs inside this page on your own machine. The video never leaves your
-    device and nothing is recorded or uploaded. The only network requests are to fetch
-    the cat and dog photos.
-  </p>
-
   <h2>Also available as a desktop app</h2>
   <p>
     The original version runs locally in Python with a few extra features, including

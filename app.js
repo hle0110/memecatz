@@ -3,12 +3,16 @@
 // dog photos.
 
 import { combine, topTags, primaryTag } from "./mood.js";
-import { FaceCalibrator, blendshapeTagsFromDeltas, classifyGesture, tagsFromGestures, setSensitivity } from "./face.js";
+import {
+  FaceCalibrator, expressionStrengths, neutralStrength, activeOnly,
+  classifyGesture, tagsFromGestures, setSensitivity,
+} from "./face.js";
 import { ReactionSource } from "./reactions.js";
 import { captionFor } from "./captions.js";
 
-// Same tuning constants as the desktop app.
-const DETECTION_INTERVAL_MS = 150;
+// Face runs every frame for responsiveness. Hands change far more slowly and
+// cost a second model invocation on the main thread, so they run less often.
+const HAND_INTERVAL_MS = 100;
 const MOOD_SWITCH_COOLDOWN_MS = 1800;
 const SAME_MOOD_ROTATE_MS = 7000;
 const MOOD_TOP_LIMIT = 3;
@@ -16,9 +20,11 @@ const MOOD_TOP_LIMIT = 3;
 // Tuning for the browser build. The desktop app had an emotion model feeding the
 // mood vector alongside these signals; here the blendshape rules are on their own,
 // so it reads expressions more eagerly and reacts faster.
-const MOOD_SMOOTHING_ALPHA = 0.5;   // desktop uses 0.35
+// Continuous strengths are inherently smoother than on/off tags, so the filter
+// can react faster without getting jumpy.
+const MOOD_SMOOTHING_ALPHA = 0.6;   // desktop uses 0.35
 const MOOD_FLOOR = 0.06;            // desktop uses 0.12
-const DEFAULT_SENSITIVITY = 1.6;    // 1.0 matches desktop thresholds exactly
+const DEFAULT_SENSITIVITY = 1.3;
 
 const WASM_ROOT = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm";
 const FACE_MODEL =
@@ -50,7 +56,9 @@ let faceLandmarker = null;
 let handLandmarker = null;
 let running = false;
 let smoothed = {};
-let lastDetect = 0;
+let lastHandDetect = 0;
+let lastGestureTags = {};
+let overlayCtx = null;
 let lastSwitch = 0;
 let lastRotate = 0;
 let lastMoodKey = null;
@@ -158,7 +166,7 @@ function updateReaction(moodTags) {
 
 // Live readout of what the face is actually producing. Open with ?debug=1 or the
 // Show detail button. This is the thing to read when moods feel wrong.
-function renderDebug(deltas, auTags, gestureTags, vector, ranked) {
+function renderDebug(deltas, auTags, gestureTags, vector, ranked, neutral) {
   if (!debugOn || !debugPanel) return;
 
   const fmt = (obj, n = 6) =>
@@ -170,55 +178,86 @@ function renderDebug(deltas, auTags, gestureTags, vector, ranked) {
 
   debugPanel.textContent =
     "biggest blendshape deltas\n" + (deltas ? fmt(deltas) : "(calibrating)") +
-    "\n\nexpression tags\n" + fmt(auTags) +
+    "\n\nexpression strengths\n" + fmt(auTags, 8) +
+    "\n\nneutral strength\n" + (neutral === undefined ? "?" : neutral.toFixed(3)) +
     "\n\ngesture tags\n" + fmt(gestureTags) +
     "\n\nmood this frame\n" + fmt(vector) +
     "\n\nsmoothed and ranked\n" + (ranked.map(([t, s]) => `${t} ${s.toFixed(3)}`).join("\n") || "(none)") +
     "\n\ncaption mood: " + (ranked.length ? ranked[0][0] : "neutral");
 }
 
+function drawMesh(landmarks) {
+  if (!overlayCtx) return;
+  const c = overlayCtx.canvas;
+  overlayCtx.clearRect(0, 0, c.width, c.height);
+  if (!landmarks || !landmarks.length) return;
+
+  // Mirrored to match the flipped video so the dots sit on your face.
+  overlayCtx.fillStyle = "rgba(120, 224, 143, 0.75)";
+  for (const p of landmarks) {
+    const x = (1 - p.x) * c.width;
+    const y = p.y * c.height;
+    overlayCtx.fillRect(x, y, 1.6, 1.6);
+  }
+}
+
 function loop() {
   if (!running) return;
   const now = Date.now();
 
-  if (now - lastDetect >= DETECTION_INTERVAL_MS && video.readyState >= 2) {
-    lastDetect = now;
+  if (video.readyState >= 2) {
     const ts = performance.now();
-
     let auTags = {};
-    let gestureTags = {};
+    let strengths = null;
+    let neutral = 1;
 
+    // Face: every frame.
     try {
       const faceResult = faceLandmarker.detectForVideo(video, ts);
       const shapes = faceResult.faceBlendshapes && faceResult.faceBlendshapes[0];
+      drawMesh(faceResult.faceLandmarks && faceResult.faceLandmarks[0]);
+
       if (shapes && shapes.categories) {
-        const raw = blendshapesToObject(shapes.categories);
+        const raw = {};
+        for (const cat of shapes.categories) raw[cat.categoryName] = cat.score;
         const deltas = calibrator.update(raw);
         lastDeltas = deltas;
         if (deltas) {
-          auTags = blendshapeTagsFromDeltas(deltas);
+          strengths = expressionStrengths(deltas);
+          auTags = activeOnly(strengths);
+          neutral = neutralStrength(strengths);
         } else {
           setStatus(`getting ready... ${Math.round(calibrator.progress() * 100)}%`);
         }
       }
     } catch (err) {
-      console.warn("face detection frame skipped:", err.message);
+      console.warn("face frame skipped:", err.message);
     }
 
-    try {
-      const handResult = handLandmarker.detectForVideo(video, ts);
-      const gestures = [];
-      for (const lm of handResult.landmarks || []) {
-        const g = classifyGesture(lm);
-        if (g) gestures.push(g);
+    // Hands: throttled.
+    if (now - lastHandDetect >= HAND_INTERVAL_MS) {
+      lastHandDetect = now;
+      try {
+        const handResult = handLandmarker.detectForVideo(video, ts);
+        const gestures = [];
+        for (const lm of handResult.landmarks || []) {
+          const g = classifyGesture(lm);
+          if (g) gestures.push(g);
+        }
+        lastGestureTags = tagsFromGestures(gestures);
+      } catch (err) {
+        console.warn("hand frame skipped:", err.message);
       }
-      gestureTags = tagsFromGestures(gestures);
-    } catch (err) {
-      console.warn("hand detection frame skipped:", err.message);
     }
 
-    if (!calibrator.calibrating && calibrator.baseline) {
-      const vector = combine({ auTags, gestureTags });
+    if (!calibrator.calibrating && calibrator.baseline && strengths) {
+      // Neutral rides in through the emotion-score slot, which is what the
+      // desktop build used it for, so the existing neutral suppression applies.
+      const vector = combine({
+        ferScores: { neutral },
+        auTags,
+        gestureTags: lastGestureTags,
+      });
       smoothed = smoothMoodVector(smoothed, vector);
       const ranked = topTags(smoothed, MOOD_TOP_LIMIT, MOOD_FLOOR);
       const tags = ranked.map(([t]) => t);
@@ -226,7 +265,7 @@ function loop() {
       moodLine.textContent = ranked.map(([t, s]) => `${t} ${s.toFixed(2)}`).join("   ");
       setStatus(reactions.describeSource());
       updateReaction(tags);
-      renderDebug(lastDeltas, auTags, gestureTags, vector, ranked);
+      renderDebug(lastDeltas, auTags, lastGestureTags, vector, ranked, neutral);
     }
   }
 
@@ -239,6 +278,12 @@ async function start() {
     setStatus("asking for camera permission");
     await startCamera();
     await loadModels();
+    const overlay = el("overlay");
+    if (overlay) {
+      overlay.width = video.videoWidth || 640;
+      overlay.height = video.videoHeight || 480;
+      overlayCtx = overlay.getContext("2d");
+    }
     calibrator.startCalibration();
     reactions.refill();
     running = true;
