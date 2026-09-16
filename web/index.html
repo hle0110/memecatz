@@ -18,6 +18,8 @@
   <div id="stage" class="stage">
     <div class="panel">
       <video id="webcam" playsinline muted></video>
+      <canvas id="overlay" class="overlay"></canvas>
+      <div class="loader" aria-hidden="true"></div>
       <div class="label">you</div>
     </div>
 
@@ -30,39 +32,36 @@
         <span id="cap-bottom" class="cap-bottom"></span>
       </div>
       <div class="label">them</div>
+      <div id="attribution" class="attribution"></div>
     </div>
   </div>
 
   <div class="controls">
-    <button id="start">Start camera</button>
-    <button id="recalibrate" disabled>Recalibrate</button>
-    <label for="animal">Reaction</label>
+    <button id="start" class="primary">Start camera</button>
+    <button id="recalibrate" disabled title="or press c">Recalibrate</button>
+    <label for="animal">React with</label>
     <select id="animal">
       <option value="cat">cats</option>
       <option value="dog">dogs</option>
     </select>
   </div>
 
-  <p id="status" class="status">Your camera stays on your device. Nothing is uploaded.</p>
   <p id="mood" class="mood"></p>
+  <p id="status" class="status"></p>
+
+  <details class="advanced">
+    <summary>Advanced</summary>
+    <div class="advanced-row">
+      <label for="sensitivity">Sensitivity</label>
+      <input id="sensitivity" type="range" min="0.6" max="3" step="0.1" value="1.3">
+      <span id="sens-value" class="sens-value">1.3</span>
+      <button id="toggle-debug">Show detail</button>
+    </div>
+    <pre id="debug" class="debug hidden"></pre>
+  </details>
 </main>
 
 <section class="about">
-  <h2>What it does</h2>
-  <p>
-    It watches your face and hands, works out your mood, and shows a real cat or dog
-    reaction next to your webcam with a caption. Give it a second to calibrate when
-    you start, then pull a face. Every reaction is a real photo fetched live, never
-    generated or drawn.
-  </p>
-
-  <h2>Privacy</h2>
-  <p>
-    Everything runs inside this page on your own machine. The video never leaves your
-    device and nothing is recorded or uploaded. The only network requests are to fetch
-    the cat and dog photos.
-  </p>
-
   <h2>Also available as a desktop app</h2>
   <p>
     The original version runs locally in Python with a few extra features, including
