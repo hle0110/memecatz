@@ -28,9 +28,17 @@ class FaceIdentityManager:
             return
         try:
             with open(self.profiles_path, "r") as handle:
-                self.profiles = json.load(handle)
+                data = json.load(handle)
         except (json.JSONDecodeError, OSError):
-            self.profiles = []
+            data = []
+        # A hand-edited or damaged file must never stop the app from starting,
+        # so anything that isn't a usable profile is skipped.
+        self.profiles = [
+            profile for profile in (data if isinstance(data, list) else [])
+            if isinstance(profile, dict)
+            and isinstance(profile.get("name"), str)
+            and isinstance(profile.get("encoding"), list) and len(profile["encoding"]) == 128
+        ]
 
     def _save(self):
         try:

@@ -1,74 +1,48 @@
-// Port of the blendshape half of vision.py: expression tags, calibration,
-// baseline drift, and hand gesture classification.
+// Port of the face and hand half of vision.py: calibration, baseline drift,
+// continuous expression strengths, and hand gesture classification.
+//
+// The desktop app runs one detection step about every 0.15 seconds. The page
+// processes every new camera frame instead, so anything that the desktop app
+// applies "once per step" is scaled by elapsed time here. That keeps the
+// behaviour the same on a 30 fps webcam, a 60 fps webcam, or a slow phone.
 
-// Threshold scaling. At 1.0 the tag rules behave exactly like the desktop app.
-// The browser build has no emotion model feeding the mood vector, so the
-// blendshape rules carry all the signal alone and need to be more sensitive.
+// Threshold scaling. At 1.0 the expression ramps use the desktop spans exactly.
 let SENSITIVITY = 1.0;
 export function setSensitivity(value) { SENSITIVITY = Math.max(0.2, Math.min(4.0, value)); }
 export function getSensitivity() { return SENSITIVITY; }
 
-export const CALIBRATION_FRAMES = 12;
-export const BASELINE_DRIFT_ALPHA = 0.01;
+// Calibration needs both a minimum number of real frames and a minimum amount
+// of time. The desktop app collects 12 samples at about 0.15 s apart, so about
+// 1.8 s. Using the same duration here keeps one blink or twitch from becoming
+// part of the neutral baseline.
+export const CALIBRATION_MIN_SAMPLES = 12;
+export const CALIBRATION_SECONDS = 1.8;
+
+export const BASELINE_DRIFT_ALPHA = 0.01;        // per desktop detection step
+export const DRIFT_REFERENCE_SECONDS = 0.15;     // desktop detection interval
 export const BLENDSHAPE_DRIFT_THRESHOLD = 0.07;
 
-// The blendshape names the tag rules below read. MediaPipe emits 52; these are
-// the ones the expression rules actually use.
+// Same 43 names vision.py tracks. The drift check averages over all of them, so
+// the list has to match for the 0.07 threshold to mean the same thing.
 export const FEATURE_KEYS = [
   "browDownLeft", "browDownRight", "browInnerUp", "browOuterUpLeft", "browOuterUpRight",
-  "cheekPuff",
+  "cheekPuff", "cheekSquintLeft", "cheekSquintRight",
   "eyeBlinkLeft", "eyeBlinkRight", "eyeSquintLeft", "eyeSquintRight", "eyeWideLeft", "eyeWideRight",
-  "jawOpen",
-  "mouthFunnel", "mouthPucker",
+  "jawOpen", "jawForward", "jawLeft", "jawRight",
+  "mouthClose", "mouthFunnel", "mouthPucker",
   "mouthSmileLeft", "mouthSmileRight", "mouthFrownLeft", "mouthFrownRight",
+  "mouthDimpleLeft", "mouthDimpleRight", "mouthStretchLeft", "mouthStretchRight",
+  "mouthPressLeft", "mouthPressRight", "mouthLowerDownLeft", "mouthLowerDownRight",
+  "mouthUpperUpLeft", "mouthUpperUpRight", "mouthShrugLower", "mouthShrugUpper",
+  "mouthRollLower", "mouthRollUpper", "mouthLeft", "mouthRight",
   "noseSneerLeft", "noseSneerRight",
 ];
 
-export function blendshapeTagsFromDeltas(deltas) {
-  const tags = {};
-  const avg = (...keys) => keys.reduce((s, k) => s + deltas[k], 0) / keys.length;
-  const clip = (value, span) => Math.max(0.0, Math.min(1.0, value / span));
-  // A higher sensitivity lowers every trigger threshold proportionally.
-  const t = (threshold) => threshold / SENSITIVITY;
-
-  const jawOpen = deltas.jawOpen;
-  if (jawOpen > t(0.18)) tags.jaw_drop = clip(jawOpen, 0.5);
-
-  const smile = avg("mouthSmileLeft", "mouthSmileRight");
-  const smileAsymmetry = Math.abs(deltas.mouthSmileLeft - deltas.mouthSmileRight);
-  if (smile > t(0.12) && !(jawOpen > 0.35)) tags.smile = clip(smile, 0.55);
-  if (smileAsymmetry > t(0.15) && smile > t(0.05)) tags.smirk = clip(smileAsymmetry, 0.35);
-
-  const frown = avg("mouthFrownLeft", "mouthFrownRight");
-  if (frown > t(0.1)) tags.frown = clip(frown, 0.4);
-
-  const browRaise = avg("browInnerUp", "browOuterUpLeft", "browOuterUpRight");
-  if (browRaise > t(0.15)) tags.brow_raise = clip(browRaise, 0.55);
-
-  const browFurrow = avg("browDownLeft", "browDownRight");
-  if (browFurrow > t(0.15)) tags.brow_furrow = clip(browFurrow, 0.5);
-
-  const browAsymmetry = Math.abs(deltas.browOuterUpLeft - deltas.browOuterUpRight);
-  if (browAsymmetry > t(0.2) && browRaise < 0.3) tags.skeptical = clip(browAsymmetry, 0.45);
-
-  const squint = avg("eyeSquintLeft", "eyeSquintRight");
-  if (squint > t(0.15)) tags.squint = clip(squint, 0.45);
-
-  const blinkAsymmetry = Math.abs(deltas.eyeBlinkLeft - deltas.eyeBlinkRight);
-  if (blinkAsymmetry > t(0.3)) tags.wink = clip(blinkAsymmetry, 0.6);
-
-  const eyeWide = avg("eyeWideLeft", "eyeWideRight");
-  if (eyeWide > t(0.15)) tags.eye_wide = clip(eyeWide, 0.4);
-
-  const sneer = avg("noseSneerLeft", "noseSneerRight");
-  if (sneer > t(0.12)) tags.sneer = clip(sneer, 0.4);
-
-  if (deltas.cheekPuff > t(0.15)) tags.cheek_puff = clip(deltas.cheekPuff, 0.4);
-
-  const pucker = avg("mouthPucker", "mouthFunnel");
-  if (pucker > t(0.15)) tags.pucker = clip(pucker, 0.45);
-
-  return tags;
+// An update rate defined per reference interval, converted to elapsed time.
+// rateAdjustedAlpha(a, ref, ref) === a, and two half steps equal one full step.
+export function rateAdjustedAlpha(alpha, elapsedSeconds, referenceSeconds) {
+  if (!(elapsedSeconds > 0)) return 0;
+  return 1 - Math.pow(1 - alpha, elapsedSeconds / referenceSeconds);
 }
 
 function median(values) {
@@ -82,30 +56,42 @@ export class FaceCalibrator {
     this.baseline = null;
     this.calibrating = false;
     this.samples = [];
+    this.startedAt = null;
+    this.lastUpdate = null;
   }
 
   startCalibration() {
     this.calibrating = true;
     this.samples = [];
     this.baseline = null;
+    this.startedAt = null;
+    this.lastUpdate = null;
   }
 
-  progress() {
+  // nowMs is a millisecond timestamp, for example performance.now().
+  progress(nowMs) {
     if (!this.calibrating) return 1.0;
-    return Math.min(1.0, this.samples.length / CALIBRATION_FRAMES);
+    if (this.startedAt === null) return 0.0;
+    const bySamples = this.samples.length / CALIBRATION_MIN_SAMPLES;
+    const byTime = (nowMs - this.startedAt) / (CALIBRATION_SECONDS * 1000);
+    return Math.max(0, Math.min(1.0, bySamples, byTime));
   }
 
-  // raw is an object of blendshape name to score for the current frame.
-  // Returns the delta object once calibrated, or null while still calibrating.
-  update(raw) {
+  // raw: blendshape name -> score for one new camera frame.
+  // Returns deltas from the baseline once calibrated, otherwise null.
+  update(raw, nowMs) {
     if (this.calibrating) {
+      if (this.startedAt === null) this.startedAt = nowMs;
       this.samples.push(raw);
-      if (this.samples.length >= CALIBRATION_FRAMES) {
+      const elapsed = (nowMs - this.startedAt) / 1000;
+      if (this.samples.length >= CALIBRATION_MIN_SAMPLES && elapsed >= CALIBRATION_SECONDS) {
         this.baseline = {};
         for (const key of FEATURE_KEYS) {
           this.baseline[key] = median(this.samples.map((s) => s[key] || 0));
         }
         this.calibrating = false;
+        this.samples = [];
+        this.lastUpdate = nowMs;
       }
     }
 
@@ -113,18 +99,21 @@ export class FaceCalibrator {
 
     const deltas = {};
     for (const key of FEATURE_KEYS) deltas[key] = (raw[key] || 0) - this.baseline[key];
-    this._drift(deltas, raw);
+
+    const dt = this.lastUpdate === null ? 0 : Math.min(1.0, (nowMs - this.lastUpdate) / 1000);
+    this.lastUpdate = nowMs;
+    this._drift(deltas, raw, dt);
     return deltas;
   }
 
-  _drift(deltas, raw) {
+  _drift(deltas, raw, dtSeconds) {
     const vals = Object.values(deltas);
     const magnitude = vals.reduce((s, v) => s + Math.abs(v), 0) / Math.max(1, vals.length);
-    if (magnitude < BLENDSHAPE_DRIFT_THRESHOLD) {
-      for (const key of FEATURE_KEYS) {
-        this.baseline[key] =
-          this.baseline[key] * (1 - BASELINE_DRIFT_ALPHA) + (raw[key] || 0) * BASELINE_DRIFT_ALPHA;
-      }
+    if (magnitude >= BLENDSHAPE_DRIFT_THRESHOLD) return;
+    const a = rateAdjustedAlpha(BASELINE_DRIFT_ALPHA, dtSeconds, DRIFT_REFERENCE_SECONDS);
+    if (a <= 0) return;
+    for (const key of FEATURE_KEYS) {
+      this.baseline[key] = this.baseline[key] * (1 - a) + (raw[key] || 0) * a;
     }
   }
 }
@@ -133,16 +122,10 @@ export class FaceCalibrator {
 // ---------------------------------------------------------------------------
 // Continuous expression reading.
 //
-// blendshapeTagsFromDeltas above is the faithful desktop port: it thresholds,
-// so a signal is either absent or present. That was correct on desktop where an
-// emotion model carried most of the mood signal, but on its own it throws away
-// the precision MediaPipe gives us. mouthSmileLeft arrives as a smooth 0..1
-// value every frame; thresholding flattens it to yes or no.
-//
-// This version keeps the value. A faint smile produces a faint happy, a broad
-// one produces a strong happy, and everything in between is represented. The
-// only hard cut is a small deadzone that rejects tracker jitter, and past that
-// the response is a smoothstep so there is no cliff at the onset.
+// The desktop rules threshold each signal, so it is either absent or present.
+// Here the value is kept: a faint smile produces a faint happy and a broad one
+// a strong happy. The only hard cut is a small deadzone that rejects tracker
+// jitter, and past that the response is a smoothstep so there is no cliff.
 // ---------------------------------------------------------------------------
 
 export const JITTER_DEADZONE = 0.04;
@@ -153,8 +136,8 @@ function ramp(value, span) {
   return t * t * (3 - 2 * t); // smoothstep, zero slope at both ends
 }
 
-// Returns every expression signal as a continuous 0..1 strength. Signals at rest
-// come back as 0 rather than being omitted, so callers see the full picture.
+// Every expression signal as a continuous 0..1 strength. Signals at rest come
+// back as 0 rather than being omitted, so callers see the full picture.
 export function expressionStrengths(deltas) {
   const avg = (...keys) => keys.reduce((s, k) => s + (deltas[k] || 0), 0) / keys.length;
   const d = (k) => deltas[k] || 0;
@@ -198,9 +181,8 @@ export function expressionStrengths(deltas) {
   return out;
 }
 
-// How neutral the face is: 1 when nothing is happening, falling towards 0 as any
-// expression takes over. This replaces the baseline the emotion model used to
-// contribute on desktop, so neutral competes properly instead of winning by default.
+// How neutral the face is: 1 when nothing is happening, falling towards 0 as
+// any expression takes over. Used only while the emotion model is not loaded.
 export function neutralStrength(strengths) {
   let peak = 0;
   for (const v of Object.values(strengths)) if (v > peak) peak = v;
@@ -214,7 +196,14 @@ export function activeOnly(strengths, floor = 0.02) {
   return out;
 }
 
-// Hand gestures, ported from the joint rules in vision.py.
+
+// ---------------------------------------------------------------------------
+// Hand gestures. Same rules and constants as classify_gesture in vision.py,
+// computed in pixels like the desktop app. MediaPipe gives x as a fraction of
+// the width and y as a fraction of the height, so distances in those raw units
+// would squash one axis on any non-square camera.
+// ---------------------------------------------------------------------------
+
 export const GESTURE_TO_TAGS = {
   thumbs_up: { approval: 1.0, happy: 0.5 },
   thumbs_down: { disapproval: 1.0, sad: 0.4 },
@@ -224,34 +213,45 @@ export const GESTURE_TO_TAGS = {
   pointing: { suspicious: 0.6, focused: 0.5 },
 };
 
+const WRIST = 0;
+const THUMB_MCP = 2;
+const THUMB_TIP = 4;
+const MIDDLE_MCP = 9;
 const FINGER_JOINTS = { index: [5, 6, 8], middle: [9, 10, 12], ring: [13, 14, 16], pinky: [17, 18, 20] };
 
-const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 
-function fingerExtended(lm, joints) {
-  const [mcp, pip, tip] = joints;
-  return dist(lm[tip], lm[0]) > dist(lm[pip], lm[0]) && dist(lm[tip], lm[0]) > dist(lm[mcp], lm[0]);
+export function toPixels(landmarks, width, height) {
+  return landmarks.map((p) => [p.x * width, p.y * height]);
 }
 
-function thumbExtended(lm) {
-  return dist(lm[4], lm[0]) > dist(lm[2], lm[0]) * 1.2;
-}
-
-export function classifyGesture(landmarks) {
-  if (!landmarks || landmarks.length < 21) return null;
-  const ext = {};
-  for (const [name, joints] of Object.entries(FINGER_JOINTS)) ext[name] = fingerExtended(landmarks, joints);
-  const thumb = thumbExtended(landmarks);
-  const count = Object.values(ext).filter(Boolean).length;
-
-  if (count === 0 && thumb) {
-    return landmarks[4].y < landmarks[0].y ? "thumbs_up" : "thumbs_down";
+// points: 21 [x, y] pairs in pixels.
+export function classifyGesturePoints(points) {
+  if (!points || points.length < 21) return null;
+  const wrist = points[WRIST];
+  const fingers = {};
+  for (const [name, [, pip, tip]] of Object.entries(FINGER_JOINTS)) {
+    fingers[name] = dist(wrist, points[tip]) > dist(wrist, points[pip]) * 1.08;
   }
-  if (count === 4) return "open_palm";
-  if (count === 0 && !thumb) return "fist";
-  if (ext.index && ext.middle && !ext.ring && !ext.pinky) return "peace";
-  if (ext.index && !ext.middle && !ext.ring && !ext.pinky) return "pointing";
+  const thumb = dist(wrist, points[THUMB_TIP]) > dist(wrist, points[THUMB_MCP]) * 1.25;
+  const anyFinger = Object.values(fingers).some(Boolean);
+  const extended = Object.values(fingers).filter(Boolean).length + (thumb ? 1 : 0);
+  const palmCenterY = (wrist[1] + points[MIDDLE_MCP][1]) / 2.0;
+
+  if (thumb && !anyFinger) {
+    if (points[THUMB_TIP][1] < palmCenterY - 15) return "thumbs_up";
+    if (points[THUMB_TIP][1] > palmCenterY + 15) return "thumbs_down";
+  }
+  if (extended >= 5) return "open_palm";
+  if (extended === 0) return "fist";
+  if (fingers.index && fingers.middle && !fingers.ring && !fingers.pinky) return "peace";
+  if (fingers.index && !fingers.middle && !fingers.ring && !fingers.pinky) return "pointing";
   return null;
+}
+
+export function classifyGesture(landmarks, width, height) {
+  if (!landmarks || landmarks.length < 21 || !width || !height) return null;
+  return classifyGesturePoints(toPixels(landmarks, width, height));
 }
 
 export function tagsFromGestures(gestures) {

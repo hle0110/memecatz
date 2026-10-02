@@ -5,3 +5,5 @@ compatibility_date = "2026-09-16"
 [assets]
 directory = "./web"
 binding = "ASSETS"
+# Unknown paths get web/404.html with a 404 status instead of an empty page.
+not_found_handling = "404-page"

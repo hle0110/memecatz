@@ -1,67 +1,64 @@
-// MemeCatz edge worker. Serves the static site from ./web and proxies one
-// endpoint, /api/giphy, so the Giphy key can live as a Cloudflare secret instead
-// of inside browser JavaScript, where anyone could read it.
+// MemeCatz edge worker. Cloudflare serves the files in ./web directly, with
+// security headers from web/_headers. This script only runs for requests that
+// do not match a file, and answers one small endpoint:
 //
-// The key is read from env.GIPHY_API_KEY. If it is not set, the endpoint
-// answers 404 and the page falls back to the keyless photo sources.
+//   /api/config   tells the page which optional services are configured.
+//
+// Giphy requires search requests to be made directly from the browser, not
+// through a proxy, so the page calls Giphy itself with the key it gets here.
+// The key lives as a Cloudflare secret named GIPHY_API_KEY so it can be
+// rotated without a code change. If it is not set, the page uses the keyless
+// photo sources instead.
 
-const GIPHY_SEARCH_URL = "https://api.giphy.com/v1/gifs/search";
-const MAX_LIMIT = 12;
+// Same policy as web/_headers (tests/test_web_parity.py checks they match).
+// Lists every host the page is allowed to load from or talk to.
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self' https://cdn.jsdelivr.net 'wasm-unsafe-eval'",
+  "connect-src 'self' https://cdn.jsdelivr.net https://storage.googleapis.com https://api.giphy.com https://api.thecatapi.com https://dog.ceo",
+  "img-src 'self' data: blob: https://*.giphy.com https://s3.us-west-2.amazonaws.com https://cdn2.thecatapi.com https://images.dog.ceo",
+  "media-src 'self' blob:",
+  "style-src 'self'",
+  "worker-src 'self' blob:",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join("; ");
 
-function json(body, status = 200, extraHeaders = {}) {
+const SECURITY_HEADERS = {
+  "content-security-policy": CSP,
+  "permissions-policy": "camera=(self), microphone=(), geolocation=(), payment=(), usb=()",
+  "referrer-policy": "strict-origin-when-cross-origin",
+  "x-content-type-options": "nosniff",
+};
+
+function withHeaders(response, extra = {}) {
+  const out = new Response(response.body, response);
+  for (const [k, v] of Object.entries({ ...SECURITY_HEADERS, ...extra })) out.headers.set(k, v);
+  return out;
+}
+
+function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", ...extraHeaders },
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
   });
 }
 
-export async function handleGiphy(request, env) {
-  const key = env.GIPHY_API_KEY;
-  if (!key) return json({ error: "giphy not configured" }, 404);
-
-  const url = new URL(request.url);
-  const q = (url.searchParams.get("q") || "").trim().slice(0, 80);
-  if (!q) return json({ error: "missing q" }, 400);
-
-  let limit = parseInt(url.searchParams.get("limit") || "8", 10);
-  if (!Number.isFinite(limit) || limit < 1) limit = 8;
-  if (limit > MAX_LIMIT) limit = MAX_LIMIT;
-
-  const upstream = new URL(GIPHY_SEARCH_URL);
-  upstream.searchParams.set("api_key", key);
-  upstream.searchParams.set("q", q);
-  upstream.searchParams.set("limit", String(limit));
-  upstream.searchParams.set("rating", "g");
-  upstream.searchParams.set("lang", "en");
-
-  let res;
-  try {
-    res = await fetch(upstream.toString(), { cf: { cacheTtl: 300, cacheEverything: true } });
-  } catch (err) {
-    return json({ error: "upstream unreachable" }, 502);
-  }
-  if (!res.ok) return json({ error: `giphy ${res.status}` }, 502);
-
-  const payload = await res.json();
-  // Strip the response down to what the page needs. Never forward the key.
-  const items = (payload.data || [])
-    .map((item) => {
-      const img = item.images || {};
-      const animated = img.fixed_height || img.downsized || img.original || {};
-      const still = img.fixed_height_still || img.original_still || {};
-      return item.id && animated.url
-        ? { id: item.id, url: animated.url, still: still.url || null, title: item.title || "" }
-        : null;
-    })
-    .filter(Boolean);
-
-  return json({ items }, 200, { "cache-control": "public, max-age=300" });
+function handleConfig(env) {
+  const giphyKey = typeof env.GIPHY_API_KEY === "string" && env.GIPHY_API_KEY.trim() ? env.GIPHY_API_KEY.trim() : null;
+  return json({ giphyKey });
 }
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === "/api/giphy") return handleGiphy(request, env);
-    return env.ASSETS.fetch(request);
+    if (url.pathname === "/api/config") {
+      if (request.method !== "GET" && request.method !== "HEAD") return withHeaders(json({ error: "method not allowed" }, 405));
+      return withHeaders(handleConfig(env));
+    }
+    if (url.pathname.startsWith("/api/")) return withHeaders(json({ error: "not found" }, 404));
+    return withHeaders(await env.ASSETS.fetch(request));
   },
 };

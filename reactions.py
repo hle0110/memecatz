@@ -1,12 +1,17 @@
 """
-Everything about getting a real reaction on screen: fetching/caching real
-cat or dog content from Giphy (mood-matched) and a zero-setup real-photo
-backup (The Cat API / Dog CEO API), picking one for the current mood, and
-rendering the caption onto it. No generated, drawn, or fake imagery
-is ever used as a substitute.
+Everything about getting a real reaction on screen: real cat or dog content
+from Giphy (mood matched, animated) and a zero-setup real photo backup (The Cat
+API / Dog CEO API), picking one for the current mood, and rendering the caption
+onto it. No generated, drawn, or fake imagery is ever used as a substitute.
+
+Giphy content follows Giphy's integration rules: search results and media are
+kept in memory for the current session only, never written to disk, and used
+in the order Giphy returns them.
 """
 
+import io
 import os
+import glob
 import json
 import random
 import shutil
@@ -15,18 +20,35 @@ import hashlib
 import requests
 import cv2
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageSequence
 
 from utils import fit_to_panel
 
 GIPHY_SEARCH_URL = "https://api.giphy.com/v1/gifs/search"
 CAT_API_SEARCH_URL = "https://api.thecatapi.com/v1/images/search"
 CAT_API_DEMO_KEY = "DEMO-API-KEY"
-DOG_API_URL = "https://dog.ceo/api/breeds/image/random"
+DOG_BREED_URL = "https://dog.ceo/api/breed/{breed}/images/random/{count}"
 REQUEST_TIMEOUT_SECONDS = 8
 FETCH_RETRY_COOLDOWN = 1800
+GIPHY_RETRY_COOLDOWN = 30
 RESULTS_PER_MOOD = 12
 GENERAL_KEY = "_general"
+
+# Animated reactions are decoded into memory, so cap their size.
+GIPHY_MAX_BYTES = 8 * 1024 * 1024
+GIPHY_MAX_FRAMES = 48
+GIF_DEFAULT_FRAME_SECONDS = 0.1
+GIF_MIN_FRAME_SECONDS = 0.02
+
+# Pet breeds only. Dog CEO's "any breed" endpoint also returns wild canids such
+# as African wild dogs and dholes. Every entry was checked against
+# https://dog.ceo/api/breeds/list/all and matches web/reactions.js.
+DOG_BREEDS = (
+    "beagle", "boxer", "bulldog/french", "cavapoo", "chihuahua", "cockapoo", "collie/border",
+    "corgi/cardigan", "dachshund", "dalmatian", "frise/bichon", "german/shepherd", "havanese",
+    "husky", "labrador", "malamute", "maltese", "papillon", "pembroke", "pomeranian",
+    "poodle/toy", "pug", "retriever/golden", "samoyed", "shiba", "shihtzu",
+)
 
 MOOD_QUERY_TEMPLATES = {
     "happy": "happy {animal}",
@@ -61,19 +83,47 @@ def query_for_mood(mood_tag, animal="cat"):
     return template.format(animal=animal)
 
 
+def decode_animation(data, max_frames=GIPHY_MAX_FRAMES):
+    """GIF bytes -> (list of BGR frames, list of frame durations in seconds).
+
+    Long animations are thinned evenly to max_frames, with the dropped frames'
+    time added to the kept ones so playback speed stays the same.
+    """
+    with Image.open(io.BytesIO(data)) as image:
+        frames = []
+        durations = []
+        for frame in ImageSequence.Iterator(image):
+            seconds = frame.info.get("duration", 0) / 1000.0
+            if seconds < GIF_MIN_FRAME_SECONDS:
+                seconds = GIF_DEFAULT_FRAME_SECONDS
+            frames.append(cv2.cvtColor(np.array(frame.convert("RGB")), cv2.COLOR_RGB2BGR))
+            durations.append(seconds)
+
+    if not frames:
+        return None, None
+    if len(frames) > max_frames:
+        step = len(frames) / float(max_frames)
+        kept_frames, kept_durations = [], []
+        for i in range(max_frames):
+            lo, hi = int(i * step), int((i + 1) * step)
+            kept_frames.append(frames[lo])
+            kept_durations.append(sum(durations[lo:hi]))
+        frames, durations = kept_frames, kept_durations
+    return frames, durations
+
+
 class AnimalReactionDataset:
     """
-    Real cat/dog reaction content, sourced live from two public APIs (no
-    bundled, generated, or fake imagery at any point). Giphy's search API is
-    queried per detected mood (e.g. "confused cat") for mood-matched reaction
-    GIFs, and requires a free Giphy API key (optional). A real-photo backup
-    (The Cat API for cats, the Dog CEO API for dogs) is used when Giphy isn't
-    configured or reachable, or has nothing for a given mood; it works out of
-    the box with zero signup, though it isn't mood-matched.
+    Real cat/dog reaction content from public APIs, never bundled, generated,
+    or fake imagery. Giphy's search API is queried per detected mood (e.g.
+    "confused cat") for mood matched GIFs and needs a free Giphy API key
+    (optional). A real photo backup (The Cat API for cats, the Dog CEO API for
+    dogs) is used when Giphy isn't configured or reachable; it works with zero
+    signup, though it isn't mood matched.
 
-    Everything downloaded is cached locally so repeat launches don't re-fetch,
-    and every network call degrades gracefully: no key, no internet, or a
-    failed request just means no image is available yet, never a fake one.
+    Backup photos are cached on disk so repeat launches don't re-fetch. Giphy
+    results stay in memory only. Every network call degrades gracefully: no key,
+    no internet, or a failed request just means no image yet, never a fake one.
     """
 
     def __init__(self, cache_dir, animal="cat", giphy_api_key=None, cat_api_key=None):
@@ -83,8 +133,14 @@ class AnimalReactionDataset:
         self.giphy_api_key = giphy_api_key or os.environ.get("GIPHY_API_KEY")
         self.cat_api_key = cat_api_key or os.environ.get("CAT_API_KEY") or CAT_API_DEMO_KEY
         self.giphy_enabled = bool(self.giphy_api_key)
-        self._mood_cache = {}
+        self._giphy_entries = {}      # mood -> entries in Giphy's order, this session only
+        self._giphy_offsets = {}
+        self._giphy_failed_at = {}
+        self._general = None
         self._status = self._read_status()
+        self._remove_stored_giphy_content()
+
+    # ---- disk cache for the backup photos -------------------------------
 
     def _status_path(self):
         return os.path.join(self.cache_dir, "fetch_status.json")
@@ -95,7 +151,8 @@ class AnimalReactionDataset:
             return {}
         try:
             with open(path, "r") as handle:
-                return json.load(handle)
+                data = json.load(handle)
+            return data if isinstance(data, dict) else {}
         except (json.JSONDecodeError, OSError):
             return {}
 
@@ -107,11 +164,32 @@ class AnimalReactionDataset:
         except OSError:
             pass
 
-    def _mood_cache_path(self, mood_tag):
-        return os.path.join(self.cache_dir, f"{mood_tag}.json")
+    def _remove_stored_giphy_content(self):
+        """Earlier versions saved Giphy stills and search results to disk."""
+        for path in glob.glob(os.path.join(self.images_dir, "giphy_*")):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        for path in glob.glob(os.path.join(self.cache_dir, "*.json")):
+            name = os.path.basename(path)
+            if name in ("fetch_status.json", f"{GENERAL_KEY}.json"):
+                continue
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        stale = [key for key in self._status if key.startswith("giphy:")]
+        if stale:
+            for key in stale:
+                del self._status[key]
+            self._write_status()
 
-    def _load_mood_cache(self, mood_tag):
-        path = self._mood_cache_path(mood_tag)
+    def _general_cache_path(self):
+        return os.path.join(self.cache_dir, f"{GENERAL_KEY}.json")
+
+    def _load_general_cache(self):
+        path = self._general_cache_path()
         if not os.path.isfile(path):
             return None
         try:
@@ -119,13 +197,15 @@ class AnimalReactionDataset:
                 data = json.load(handle)
         except (json.JSONDecodeError, OSError):
             return None
-        valid = [entry for entry in data if os.path.isfile(entry.get("local_path", ""))]
+        if not isinstance(data, list):
+            return None
+        valid = [e for e in data if isinstance(e, dict) and os.path.isfile(e.get("local_path", ""))]
         return valid if valid else None
 
-    def _save_mood_cache(self, mood_tag, entries):
+    def _save_general_cache(self, entries):
         try:
             os.makedirs(self.cache_dir, exist_ok=True)
-            with open(self._mood_cache_path(mood_tag), "w") as handle:
+            with open(self._general_cache_path(), "w") as handle:
                 json.dump(entries, handle)
         except OSError:
             pass
@@ -140,7 +220,8 @@ class AnimalReactionDataset:
         self._status[status_key] = {"last_attempt": time.time(), "last_success": success}
         self._write_status()
 
-    def _download(self, url, dest_path):
+    @staticmethod
+    def _download(url, dest_path):
         try:
             response = requests.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
             response.raise_for_status()
@@ -150,55 +231,96 @@ class AnimalReactionDataset:
         except (requests.RequestException, OSError):
             return False
 
+    # ---- Giphy, in memory only ------------------------------------------
+
     def _fetch_giphy(self, mood_tag):
-        status_key = f"giphy:{mood_tag}"
-        if not self.giphy_enabled or not self._should_retry(status_key):
+        if not self.giphy_enabled:
+            return None
+        if time.time() - self._giphy_failed_at.get(mood_tag, 0) < GIPHY_RETRY_COOLDOWN:
             return None
 
-        os.makedirs(self.images_dir, exist_ok=True)
+        offset = self._giphy_offsets.get(mood_tag, 0)
         params = {
             "api_key": self.giphy_api_key,
             "q": query_for_mood(mood_tag, animal=self.animal),
             "limit": RESULTS_PER_MOOD,
+            "offset": offset,
             "rating": "g",
             "lang": "en",
         }
         try:
             response = requests.get(GIPHY_SEARCH_URL, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
+            if response.status_code in (401, 403):
+                print(f"giphy rejected the key ({response.status_code}), using photos instead")
+                self.giphy_enabled = False
+                return None
             response.raise_for_status()
             payload = response.json()
         except (requests.RequestException, ValueError):
-            self._mark_status(status_key, False)
+            self._giphy_failed_at[mood_tag] = time.time()
             return None
 
+        data = payload.get("data", []) if isinstance(payload, dict) else []
         entries = []
-        for item in payload.get("data", []):
-            gif_id = item.get("id")
-            images = item.get("images", {})
-            still = images.get("fixed_height_still") or images.get("original_still") or {}
-            still_url = still.get("url")
-            if not gif_id or not still_url:
+        for item in data:
+            gif_id = item.get("id") if isinstance(item, dict) else None
+            fixed = (item.get("images") or {}).get("fixed_height") or {} if gif_id else {}
+            media_url = fixed.get("url")
+            if not gif_id or not media_url:
                 continue
-
-            local_path = os.path.join(self.images_dir, f"giphy_{gif_id}.jpg")
-            if not os.path.isfile(local_path) and not self._download(still_url, local_path):
-                continue
-
             entries.append({
                 "key": f"giphy:{gif_id}",
                 "name": f"{mood_tag} {self.animal} reaction",
-                "local_path": local_path,
+                "media_url": media_url,
                 "source": "giphy",
                 "attribution": "Powered By GIPHY",
             })
 
+        # Past the end of the results, start from the top on the next search.
+        self._giphy_offsets[mood_tag] = 0 if len(data) < RESULTS_PER_MOOD else offset + len(data)
         if not entries:
-            self._mark_status(status_key, False)
+            self._giphy_failed_at[mood_tag] = time.time()
             return None
-
-        self._mark_status(status_key, True)
-        self._save_mood_cache(mood_tag, entries)
         return entries
+
+    def get_for_mood(self, mood_tag):
+        """Giphy entries for a mood, in Giphy's order. Fetches more when empty."""
+        queue = self._giphy_entries.get(mood_tag)
+        if not queue:
+            fetched = self._fetch_giphy(mood_tag)
+            if fetched:
+                self._giphy_entries[mood_tag] = fetched
+                queue = fetched
+        return queue or None
+
+    def take_for_mood(self, mood_tag, exclude_key=None):
+        """Removes and returns the next Giphy entry for the mood, or None."""
+        queue = self.get_for_mood(mood_tag)
+        if not queue:
+            return None
+        for i, entry in enumerate(queue):
+            if entry["key"] != exclude_key:
+                return queue.pop(i)
+        return None
+
+    @staticmethod
+    def load_giphy_media(entry):
+        """Downloads one Giphy GIF into memory. Returns (frames, durations) or (None, None)."""
+        try:
+            response = requests.get(entry["media_url"], timeout=REQUEST_TIMEOUT_SECONDS, stream=True)
+            response.raise_for_status()
+            chunks = []
+            size = 0
+            for chunk in response.iter_content(chunk_size=1 << 16):
+                size += len(chunk)
+                if size > GIPHY_MAX_BYTES:
+                    return None, None
+                chunks.append(chunk)
+            return decode_animation(b"".join(chunks))
+        except (requests.RequestException, OSError, ValueError):
+            return None, None
+
+    # ---- backup photos ----------------------------------------------------
 
     def _fetch_cat_api(self):
         status_key = "cat_api"
@@ -219,8 +341,8 @@ class AnimalReactionDataset:
         entries = []
         items = payload if isinstance(payload, list) else []
         for item in items:
-            image_id = item.get("id")
-            url = item.get("url")
+            image_id = item.get("id") if isinstance(item, dict) else None
+            url = item.get("url") if image_id else None
             if not image_id or not url:
                 continue
 
@@ -242,7 +364,7 @@ class AnimalReactionDataset:
             return None
 
         self._mark_status(status_key, True)
-        self._save_mood_cache(GENERAL_KEY, entries)
+        self._save_general_cache(entries)
         return entries
 
     def _fetch_dog_api(self):
@@ -251,25 +373,24 @@ class AnimalReactionDataset:
             return None
 
         os.makedirs(self.images_dir, exist_ok=True)
-        entries = []
-        for _ in range(RESULTS_PER_MOOD):
+        urls = []
+        for breed in random.sample(DOG_BREEDS, 3):
             try:
-                response = requests.get(DOG_API_URL, timeout=REQUEST_TIMEOUT_SECONDS)
+                response = requests.get(DOG_BREED_URL.format(breed=breed, count=4), timeout=REQUEST_TIMEOUT_SECONDS)
                 response.raise_for_status()
                 payload = response.json()
             except (requests.RequestException, ValueError):
-                break
+                continue
+            if payload.get("status") == "success" and isinstance(payload.get("message"), list):
+                urls.extend(payload["message"])
 
-            if payload.get("status") != "success" or not payload.get("message"):
-                break
-
-            url = payload["message"]
+        entries = []
+        for url in urls:
             image_id = hashlib.md5(url.encode("utf-8")).hexdigest()[:12]
             extension = os.path.splitext(url)[1] or ".jpg"
             local_path = os.path.join(self.images_dir, f"dogapi_{image_id}{extension}")
             if not os.path.isfile(local_path) and not self._download(url, local_path):
                 continue
-
             entries.append({
                 "key": f"dogapi:{image_id}",
                 "name": "real dog photo",
@@ -283,45 +404,31 @@ class AnimalReactionDataset:
             return None
 
         self._mark_status(status_key, True)
-        self._save_mood_cache(GENERAL_KEY, entries)
+        self._save_general_cache(entries)
         return entries
 
-    def get_for_mood(self, mood_tag):
-        if mood_tag in self._mood_cache:
-            return self._mood_cache[mood_tag]
-
-        entries = self._load_mood_cache(mood_tag)
-        if entries is None:
-            entries = self._fetch_giphy(mood_tag)
-
-        if entries:
-            self._mood_cache[mood_tag] = entries
-            return entries
-        return None
-
     def get_general(self):
-        if GENERAL_KEY in self._mood_cache:
-            return self._mood_cache[GENERAL_KEY]
-
-        entries = self._load_mood_cache(GENERAL_KEY)
+        if self._general:
+            return self._general
+        entries = self._load_general_cache()
         if entries is None:
             entries = self._fetch_dog_api() if self.animal == "dog" else self._fetch_cat_api()
-
         if entries:
-            self._mood_cache[GENERAL_KEY] = entries
-            return entries
-        return None
+            self._general = entries
+        return entries
 
     def describe_source(self):
         backup_name = "Dog CEO API" if self.animal == "dog" else "The Cat API"
         if self.giphy_enabled:
-            return f"real {self.animal} reactions via Giphy (mood-matched), real {self.animal} photos via {backup_name} as backup"
-        return f"real {self.animal} photos via {backup_name} (set GIPHY_API_KEY for mood-matched reactions instead of generic photos)"
+            return f"real {self.animal} reactions via Giphy (mood matched, animated), real {self.animal} photos via {backup_name} as backup"
+        return f"real {self.animal} photos via {backup_name} (set GIPHY_API_KEY for mood matched reactions instead of generic photos)"
 
     def clear_cache(self):
         if os.path.isdir(self.cache_dir):
             shutil.rmtree(self.cache_dir, ignore_errors=True)
-        self._mood_cache = {}
+        self._giphy_entries = {}
+        self._giphy_offsets = {}
+        self._general = None
         self._status = {}
 
 
@@ -335,35 +442,61 @@ class ReactionSource:
         return self.dataset.describe_source()
 
     def pick(self, mood_tags, exclude_key=None):
-        primary_mood = mood_tags[0] if mood_tags else "neutral"
+        """
+        A reaction for the strongest mood that has one: Giphy first, walking
+        down the ranked moods, then a backup photo. Returns a dict with "image"
+        (first frame) and, for animations, "frames" and "durations".
+        """
+        moods = list(mood_tags) if mood_tags else ["neutral"]
+        primary_mood = moods[0]
 
-        entries = self.dataset.get_for_mood(primary_mood)
-        if not entries:
-            entries = self.dataset.get_general()
+        for mood in moods:
+            for _ in range(3):  # skip a GIF that fails to download or decode
+                entry = self.dataset.take_for_mood(mood, exclude_key=exclude_key)
+                if entry is None:
+                    break
+                frames, durations = self.dataset.load_giphy_media(entry)
+                if frames:
+                    return {
+                        "key": entry["key"],
+                        "name": entry["name"],
+                        "image": frames[0],
+                        "frames": frames if len(frames) > 1 else None,
+                        "durations": durations if len(frames) > 1 else None,
+                        "source": entry["source"],
+                        "attribution": entry["attribution"],
+                        "tags": [mood],
+                    }
 
+        entries = self.dataset.get_general()
         if entries:
             candidates = entries
             if exclude_key is not None and len(entries) > 1:
                 filtered = [entry for entry in entries if entry["key"] != exclude_key]
                 if filtered:
                     candidates = filtered
-
-            choice = random.choice(candidates)
-            image = cv2.imread(choice["local_path"])
-            if image is not None:
-                return {
-                    "key": choice["key"],
-                    "name": choice["name"],
-                    "image": image,
-                    "source": choice["source"],
-                    "attribution": choice.get("attribution"),
-                    "tags": [primary_mood],
-                }
+            candidates = list(candidates)
+            random.shuffle(candidates)
+            for choice in candidates[:3]:
+                image = cv2.imread(choice["local_path"])
+                if image is not None:
+                    return {
+                        "key": choice["key"],
+                        "name": choice["name"],
+                        "image": image,
+                        "frames": None,
+                        "durations": None,
+                        "source": choice["source"],
+                        "attribution": choice.get("attribution"),
+                        "tags": [primary_mood],
+                    }
 
         return {
             "key": f"unavailable:{primary_mood}",
             "name": f"{primary_mood} reaction",
             "image": None,
+            "frames": None,
+            "durations": None,
             "source": "unavailable",
             "attribution": None,
             "tags": [primary_mood],
@@ -448,11 +581,14 @@ def _block_height(draw, text, max_width, start_size):
     return (font.size + 6) * len(lines)
 
 
-def render(reaction_bgr, caption, panel_width, panel_height, placeholder_text="loading reaction...", attribution=None):
-    canvas = fit_to_panel(reaction_bgr, panel_width, panel_height, placeholder_text=placeholder_text)
-    rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
-    pil_image = Image.fromarray(rgb)
-    draw = ImageDraw.Draw(pil_image)
+def caption_overlay(caption, panel_width, panel_height, attribution=None):
+    """The caption and attribution drawn once on a transparent layer.
+
+    Returns (bgr, alpha) with alpha in 0..1, shaped (h, w, 1), so the same text
+    can be laid over every frame of an animation cheaply.
+    """
+    layer = Image.new("RGBA", (panel_width, panel_height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
 
     start_size = max(MIN_FONT_SIZE, int(panel_height * MAX_FONT_SIZE_RATIO))
     margin = int(panel_height * TEXT_MARGIN_RATIO)
@@ -481,5 +617,25 @@ def render(reaction_bgr, caption, panel_width, panel_height, placeholder_text="l
             fill=(220, 220, 220),
         )
 
-    rendered_rgb = np.array(pil_image)
-    return cv2.cvtColor(rendered_rgb, cv2.COLOR_RGB2BGR)
+    rgba = np.array(layer)
+    bgr = cv2.cvtColor(rgba[:, :, :3], cv2.COLOR_RGB2BGR).astype(np.float32)
+    alpha = (rgba[:, :, 3:4].astype(np.float32)) / 255.0
+    return bgr, alpha
+
+
+def _apply_overlay(canvas_bgr, overlay):
+    bgr, alpha = overlay
+    blended = canvas_bgr.astype(np.float32) * (1.0 - alpha) + bgr * alpha
+    return np.clip(blended + 0.5, 0, 255).astype(np.uint8)
+
+
+def render(reaction_bgr, caption, panel_width, panel_height, placeholder_text="loading reaction...", attribution=None):
+    canvas = fit_to_panel(reaction_bgr, panel_width, panel_height, placeholder_text=placeholder_text)
+    overlay = caption_overlay(caption, panel_width, panel_height, attribution=attribution)
+    return _apply_overlay(canvas, overlay)
+
+
+def render_frames(frames_bgr, caption, panel_width, panel_height, attribution=None):
+    """Every frame of an animation fitted to the panel with the same caption."""
+    overlay = caption_overlay(caption, panel_width, panel_height, attribution=attribution)
+    return [_apply_overlay(fit_to_panel(frame, panel_width, panel_height), overlay) for frame in frames_bgr]

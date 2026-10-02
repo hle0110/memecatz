@@ -1,9 +1,12 @@
 """
 Everything that reads signals off the webcam frame: the 7-class emotion CNN,
-the face analyzer (52-point blendshapes or a geometric fallback), and hand
-gesture recognition. Combined into one module since they're all "look at the
-frame and produce tags/scores" — mood.py is what actually combines their
-output into a final mood.
+the face analyzer (52-point blendshapes), and hand gesture recognition.
+Combined into one module since they're all "look at the frame and produce
+tags/scores". mood.py is what actually combines their output into a final mood.
+
+Face and hands use MediaPipe's tasks API, which every mediapipe release from
+0.10.21 on provides. The older mp.solutions API was removed in 0.10.30, so
+nothing here depends on it.
 """
 
 import os
@@ -159,52 +162,102 @@ class EmotionDetector:
 
 
 # ============================================================================
-# Face analysis: 52-point blendshapes (preferred) or a geometric fallback
+# Model downloads (face and hand landmark models, cached after the first run)
 # ============================================================================
 
-BLENDSHAPE_MODEL_PATH = os.path.join(MODEL_CACHE_DIR, "face_landmarker.task")
-DOWNLOAD_STATUS_PATH = os.path.join(MODEL_CACHE_DIR, "download_status.json")
-BLENDSHAPE_MODEL_URL = (
-    "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
-    "face_landmarker/float16/latest/face_landmarker.task"
-)
 MODEL_DOWNLOAD_TIMEOUT_SECONDS = 20
 DOWNLOAD_RETRY_COOLDOWN_SECONDS = 3600
+DOWNLOAD_STATUS_PATH = os.path.join(MODEL_CACHE_DIR, "download_status.json")
+
+# Pinned model versions, so a new upload can never change behaviour silently.
+BLENDSHAPE_MODEL_PATH = os.path.join(MODEL_CACHE_DIR, "face_landmarker.task")
+BLENDSHAPE_MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
+    "face_landmarker/float16/1/face_landmarker.task"
+)
+HAND_MODEL_PATH = os.path.join(MODEL_CACHE_DIR, "hand_landmarker.task")
+HAND_MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
+    "hand_landmarker/float16/1/hand_landmarker.task"
+)
+
+
+def _read_download_status():
+    if not os.path.isfile(DOWNLOAD_STATUS_PATH):
+        return {}
+    try:
+        with open(DOWNLOAD_STATUS_PATH, "r") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _write_download_status(status):
+    try:
+        os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
+        with open(DOWNLOAD_STATUS_PATH, "w") as handle:
+            json.dump(status, handle)
+    except OSError:
+        pass
+
+
+def ensure_model(path, url):
+    """Downloads a model file once. Returns True if it is available locally.
+
+    A failed download is not retried for an hour, so an offline start stays fast.
+    """
+    if os.path.isfile(path) and os.path.getsize(path) > 0:
+        return True
+
+    key = os.path.basename(path)
+    status = _read_download_status()
+    last_attempt = status.get(key, {}).get("last_attempt", 0) if isinstance(status.get(key), dict) else 0
+    if (time.time() - last_attempt) < DOWNLOAD_RETRY_COOLDOWN_SECONDS:
+        return False
+
+    try:
+        os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
+        response = requests.get(url, timeout=MODEL_DOWNLOAD_TIMEOUT_SECONDS, stream=True)
+        response.raise_for_status()
+        tmp_path = path + ".part"
+        with open(tmp_path, "wb") as handle:
+            for chunk in response.iter_content(chunk_size=1 << 16):
+                if chunk:
+                    handle.write(chunk)
+        os.replace(tmp_path, path)
+        status[key] = {"last_attempt": time.time(), "last_success": True}
+        _write_download_status(status)
+        return True
+    except (requests.RequestException, OSError):
+        status[key] = {"last_attempt": time.time(), "last_success": False}
+        _write_download_status(status)
+        return False
+
+
+def ensure_blendshape_model():
+    return ensure_model(BLENDSHAPE_MODEL_PATH, BLENDSHAPE_MODEL_URL)
+
+
+def ensure_hand_model():
+    return ensure_model(HAND_MODEL_PATH, HAND_MODEL_URL)
+
+
+def _to_mp_image(frame_bgr):
+    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    return mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb))
+
+
+# ============================================================================
+# Face analysis: 52-point blendshapes
+# ============================================================================
 
 CALIBRATION_FRAMES = 12
 BASELINE_DRIFT_ALPHA = 0.01
-DRIFT_THRESHOLDS = {"geometric": 0.05, "blendshapes": 0.07}
+BLENDSHAPE_DRIFT_THRESHOLD = 0.07
 MAX_GUEST_FACES = 3
 GUEST_MATCH_DISTANCE_RATIO = 0.6
 GUEST_STALE_SECONDS = 2.0
-
-RIGHT_EYE_OUTER = 33
-RIGHT_EYE_INNER = 133
-RIGHT_EYE_TOP = 159
-RIGHT_EYE_BOTTOM = 145
-LEFT_EYE_OUTER = 263
-LEFT_EYE_INNER = 362
-LEFT_EYE_TOP = 386
-LEFT_EYE_BOTTOM = 374
-MOUTH_RIGHT = 61
-MOUTH_LEFT = 291
-LIP_TOP = 13
-LIP_BOTTOM = 14
-RIGHT_BROW = 105
-LEFT_BROW = 334
-FOREHEAD = 10
-CHIN = 152
-NOSE_TIP = 4
-
-GEOMETRIC_FEATURE_KEYS = (
-    "mouth_aperture",
-    "mouth_width",
-    "smile_curve",
-    "corner_asymmetry",
-    "eyebrow_raise",
-    "eye_aperture_right",
-    "eye_aperture_left",
-)
 
 BLENDSHAPE_NAMES = (
     "browDownLeft", "browDownRight", "browInnerUp", "browOuterUpLeft", "browOuterUpRight",
@@ -219,51 +272,6 @@ BLENDSHAPE_NAMES = (
     "mouthRollLower", "mouthRollUpper", "mouthLeft", "mouthRight",
     "noseSneerLeft", "noseSneerRight",
 )
-
-
-def _read_download_status():
-    if not os.path.isfile(DOWNLOAD_STATUS_PATH):
-        return {}
-    try:
-        with open(DOWNLOAD_STATUS_PATH, "r") as handle:
-            return json.load(handle)
-    except (json.JSONDecodeError, OSError):
-        return {}
-
-
-def _write_download_status(status):
-    try:
-        os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
-        with open(DOWNLOAD_STATUS_PATH, "w") as handle:
-            json.dump(status, handle)
-    except OSError:
-        pass
-
-
-def ensure_blendshape_model():
-    if os.path.isfile(BLENDSHAPE_MODEL_PATH) and os.path.getsize(BLENDSHAPE_MODEL_PATH) > 0:
-        return True
-
-    status = _read_download_status()
-    last_attempt = status.get("last_attempt", 0)
-    if (time.time() - last_attempt) < DOWNLOAD_RETRY_COOLDOWN_SECONDS:
-        return False
-
-    try:
-        os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
-        response = requests.get(BLENDSHAPE_MODEL_URL, timeout=MODEL_DOWNLOAD_TIMEOUT_SECONDS, stream=True)
-        response.raise_for_status()
-        tmp_path = BLENDSHAPE_MODEL_PATH + ".part"
-        with open(tmp_path, "wb") as handle:
-            for chunk in response.iter_content(chunk_size=1 << 16):
-                if chunk:
-                    handle.write(chunk)
-        os.replace(tmp_path, BLENDSHAPE_MODEL_PATH)
-        _write_download_status({"last_attempt": time.time(), "last_success": True})
-        return True
-    except (requests.RequestException, OSError):
-        _write_download_status({"last_attempt": time.time(), "last_success": False})
-        return False
 
 
 class _BlendshapeBackend:
@@ -285,9 +293,7 @@ class _BlendshapeBackend:
 
     def process(self, frame_bgr):
         height, width = frame_bgr.shape[:2]
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        result = self._landmarker.detect(mp_image)
+        result = self._landmarker.detect(_to_mp_image(frame_bgr))
         return self.parse_result(result, width, height)
 
     @staticmethod
@@ -318,114 +324,30 @@ class _BlendshapeBackend:
         self._landmarker.close()
 
 
-class _GeometricBackend:
-    engine_name = "geometric"
-
-    def __init__(self, max_faces=1, min_detection_confidence=0.5, min_tracking_confidence=0.5):
-        self._mesh = mp.solutions.face_mesh.FaceMesh(
-            static_image_mode=False,
-            max_num_faces=max_faces,
-            refine_landmarks=True,
-            min_detection_confidence=min_detection_confidence,
-            min_tracking_confidence=min_tracking_confidence,
-        )
-
-    @staticmethod
-    def _points(landmarks, width, height):
-        return {
-            "right_eye_outer": (landmarks[RIGHT_EYE_OUTER].x * width, landmarks[RIGHT_EYE_OUTER].y * height),
-            "right_eye_inner": (landmarks[RIGHT_EYE_INNER].x * width, landmarks[RIGHT_EYE_INNER].y * height),
-            "right_eye_top": (landmarks[RIGHT_EYE_TOP].x * width, landmarks[RIGHT_EYE_TOP].y * height),
-            "right_eye_bottom": (landmarks[RIGHT_EYE_BOTTOM].x * width, landmarks[RIGHT_EYE_BOTTOM].y * height),
-            "left_eye_outer": (landmarks[LEFT_EYE_OUTER].x * width, landmarks[LEFT_EYE_OUTER].y * height),
-            "left_eye_inner": (landmarks[LEFT_EYE_INNER].x * width, landmarks[LEFT_EYE_INNER].y * height),
-            "left_eye_top": (landmarks[LEFT_EYE_TOP].x * width, landmarks[LEFT_EYE_TOP].y * height),
-            "left_eye_bottom": (landmarks[LEFT_EYE_BOTTOM].x * width, landmarks[LEFT_EYE_BOTTOM].y * height),
-            "mouth_right": (landmarks[MOUTH_RIGHT].x * width, landmarks[MOUTH_RIGHT].y * height),
-            "mouth_left": (landmarks[MOUTH_LEFT].x * width, landmarks[MOUTH_LEFT].y * height),
-            "lip_top": (landmarks[LIP_TOP].x * width, landmarks[LIP_TOP].y * height),
-            "lip_bottom": (landmarks[LIP_BOTTOM].x * width, landmarks[LIP_BOTTOM].y * height),
-            "right_brow": (landmarks[RIGHT_BROW].x * width, landmarks[RIGHT_BROW].y * height),
-            "left_brow": (landmarks[LEFT_BROW].x * width, landmarks[LEFT_BROW].y * height),
-        }
-
-    @staticmethod
-    def _raw_features(pts):
-        iod = _dist(pts["right_eye_outer"], pts["left_eye_outer"])
-        if iod < 1e-6:
-            iod = 1.0
-
-        corner_avg_y = (pts["mouth_right"][1] + pts["mouth_left"][1]) / 2.0
-
-        features = {
-            "mouth_aperture": _dist(pts["lip_top"], pts["lip_bottom"]) / iod,
-            "mouth_width": _dist(pts["mouth_right"], pts["mouth_left"]) / iod,
-            "smile_curve": (pts["lip_top"][1] - corner_avg_y) / iod,
-            "corner_asymmetry": (pts["mouth_right"][1] - pts["mouth_left"][1]) / iod,
-            "eyebrow_raise": (
-                (_dist(pts["right_brow"], pts["right_eye_top"]) + _dist(pts["left_brow"], pts["left_eye_top"]))
-                / 2.0
-                / iod
-            ),
-            "eye_aperture_right": _dist(pts["right_eye_top"], pts["right_eye_bottom"]) / iod,
-            "eye_aperture_left": _dist(pts["left_eye_top"], pts["left_eye_bottom"]) / iod,
-        }
-        return features, iod
-
-    @staticmethod
-    def _bounding_box(pts, width, height):
-        xs = [p[0] for p in pts.values()]
-        ys = [p[1] for p in pts.values()]
-        x1 = max(0, int(min(xs)) - 20)
-        y1 = max(0, int(min(ys)) - 40)
-        x2 = min(width, int(max(xs)) + 20)
-        y2 = min(height, int(max(ys)) + 20)
-        return x1, y1, x2 - x1, y2 - y1
-
-    def process(self, frame_bgr):
-        height, width = frame_bgr.shape[:2]
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        rgb.flags.writeable = False
-        results = self._mesh.process(rgb)
-
-        if not results.multi_face_landmarks:
-            return None
-
-        faces = []
-        for face_landmarks in results.multi_face_landmarks:
-            landmarks = face_landmarks.landmark
-            pts = self._points(landmarks, width, height)
-            raw_features, _ = self._raw_features(pts)
-            box = self._bounding_box(pts, width, height)
-            faces.append({"raw_features": raw_features, "box": box})
-
-        return faces
-
-    def close(self):
-        self._mesh.close()
-
-
 class FaceAnalyzer:
-    def __init__(self, max_faces=4, min_detection_confidence=0.5, min_tracking_confidence=0.5, prefer_blendshapes=True):
+    """Blendshape face analysis with per-person calibration.
+
+    If the face model cannot be downloaded, engine is None and analyze()
+    returns None. The rest of the app keeps running on the emotion model and
+    hand gestures.
+    """
+
+    def __init__(self, max_faces=4, min_detection_confidence=0.5):
         self._backend = None
         self.engine = None
+        self.error = None
 
-        if prefer_blendshapes and ensure_blendshape_model():
+        if ensure_blendshape_model():
             try:
                 self._backend = _BlendshapeBackend(num_faces=max_faces, min_detection_confidence=min_detection_confidence)
                 self.engine = self._backend.engine_name
-            except Exception:
+            except Exception as exc:
                 self._backend = None
+                self.error = str(exc)
+        else:
+            self.error = "face model not downloaded (offline?), retrying within an hour"
 
-        if self._backend is None:
-            self._backend = _GeometricBackend(
-                max_faces=max_faces,
-                min_detection_confidence=min_detection_confidence,
-                min_tracking_confidence=min_tracking_confidence,
-            )
-            self.engine = self._backend.engine_name
-
-        self.feature_keys = BLENDSHAPE_NAMES if self.engine == "blendshapes" else GEOMETRIC_FEATURE_KEYS
+        self.feature_keys = BLENDSHAPE_NAMES
 
         self.baseline = None
         self.calibrating = False
@@ -446,8 +368,7 @@ class FaceAnalyzer:
 
     def _drift_baseline(self, baseline, deltas, raw_features):
         magnitude = sum(abs(v) for v in deltas.values()) / max(1, len(deltas))
-        threshold = DRIFT_THRESHOLDS.get(self.engine, 0.06)
-        if magnitude < threshold:
+        if magnitude < BLENDSHAPE_DRIFT_THRESHOLD:
             for key in self.feature_keys:
                 baseline[key] = baseline[key] * (1 - BASELINE_DRIFT_ALPHA) + raw_features[key] * BASELINE_DRIFT_ALPHA
 
@@ -485,16 +406,19 @@ class FaceAnalyzer:
             deltas = {key: raw_features[key] - track["baseline"][key] for key in self.feature_keys}
             self._drift_baseline(track["baseline"], deltas, raw_features)
 
-            if self.engine == "blendshapes":
-                tags = _blendshape_tags_from_deltas(deltas)
-            else:
-                tags = _geometric_tags_from_deltas(deltas)
+            tags = _blendshape_tags_from_deltas(deltas)
             results.append({"box": box, "tags": tags})
 
         self._guest_tracks = [t for t in self._guest_tracks if now - t["last_seen"] < GUEST_STALE_SECONDS]
         return results
 
+    @property
+    def available(self):
+        return self._backend is not None
+
     def analyze(self, frame_bgr):
+        if self._backend is None:
+            return None
         faces = self._backend.process(frame_bgr)
         if not faces:
             return None
@@ -531,40 +455,8 @@ class FaceAnalyzer:
         }
 
     def close(self):
-        self._backend.close()
-
-
-def _geometric_tags_from_deltas(deltas):
-    tags = {}
-
-    jaw_drop_active = deltas["mouth_aperture"] > 0.22
-    if jaw_drop_active:
-        tags["jaw_drop"] = min(1.0, deltas["mouth_aperture"] / 0.4)
-
-    smile_score = max(0.0, deltas["smile_curve"]) + max(0.0, deltas["mouth_width"]) * 0.5
-    if smile_score > 0.05 and not (jaw_drop_active and deltas["mouth_aperture"] > 0.3):
-        tags["smile"] = min(1.0, smile_score / 0.18)
-
-    if deltas["smile_curve"] < -0.045:
-        tags["frown"] = min(1.0, -deltas["smile_curve"] / 0.12)
-
-    if abs(deltas["corner_asymmetry"]) > 0.035 and smile_score < 0.09:
-        tags["smirk"] = min(1.0, abs(deltas["corner_asymmetry"]) / 0.09)
-
-    if deltas["eyebrow_raise"] > 0.055:
-        tags["brow_raise"] = min(1.0, deltas["eyebrow_raise"] / 0.13)
-    elif deltas["eyebrow_raise"] < -0.03:
-        tags["brow_furrow"] = min(1.0, -deltas["eyebrow_raise"] / 0.08)
-
-    eye_r = deltas["eye_aperture_right"]
-    eye_l = deltas["eye_aperture_left"]
-    both_narrow = eye_r < -0.035 and eye_l < -0.035
-    if both_narrow:
-        tags["squint"] = min(1.0, -((eye_r + eye_l) / 2.0) / 0.1)
-    elif abs(eye_r - eye_l) > 0.05:
-        tags["wink"] = min(1.0, abs(eye_r - eye_l) / 0.12)
-
-    return tags
+        if self._backend is not None:
+            self._backend.close()
 
 
 def _blendshape_tags_from_deltas(deltas):
@@ -630,22 +522,16 @@ def _blendshape_tags_from_deltas(deltas):
 
 
 def tags_from_deltas(result_or_deltas):
+    """Expression tags from a FaceAnalyzer result or a plain deltas dict."""
     if result_or_deltas is None:
         return {}
-
     if isinstance(result_or_deltas, dict) and "engine" in result_or_deltas:
         deltas = result_or_deltas.get("deltas")
-        engine = result_or_deltas.get("engine")
     else:
         deltas = result_or_deltas
-        engine = "geometric" if deltas is not None and "mouth_aperture" in deltas else "blendshapes"
-
     if deltas is None:
         return {}
-
-    if engine == "blendshapes":
-        return _blendshape_tags_from_deltas(deltas)
-    return _geometric_tags_from_deltas(deltas)
+    return _blendshape_tags_from_deltas(deltas)
 
 
 # ============================================================================
@@ -731,26 +617,47 @@ def classify_gesture(points):
 
 
 class HandGestureRecognizer:
-    def __init__(self, max_hands=2, min_detection_confidence=0.6, min_tracking_confidence=0.5):
-        self._hands = mp.solutions.hands.Hands(
-            static_image_mode=False,
-            max_num_hands=max_hands,
-            min_detection_confidence=min_detection_confidence,
-            min_tracking_confidence=min_tracking_confidence,
-        )
+    """Hand landmarks through MediaPipe's HandLandmarker task.
+
+    If the hand model cannot be downloaded, analyze() returns no detections
+    and the app runs without gestures.
+    """
+
+    def __init__(self, max_hands=2, min_detection_confidence=0.6, min_presence_confidence=0.5):
+        self._landmarker = None
+        self.error = None
+        if not ensure_hand_model():
+            self.error = "hand model not downloaded (offline?), retrying within an hour"
+            return
+        try:
+            from mediapipe.tasks.python import vision as mp_vision
+            from mediapipe.tasks.python.core.base_options import BaseOptions
+
+            options = mp_vision.HandLandmarkerOptions(
+                base_options=BaseOptions(model_asset_path=HAND_MODEL_PATH),
+                running_mode=mp_vision.RunningMode.IMAGE,
+                num_hands=max_hands,
+                min_hand_detection_confidence=min_detection_confidence,
+                min_hand_presence_confidence=min_presence_confidence,
+            )
+            self._landmarker = mp_vision.HandLandmarker.create_from_options(options)
+        except Exception as exc:
+            self._landmarker = None
+            self.error = str(exc)
+
+    @property
+    def available(self):
+        return self._landmarker is not None
 
     def analyze(self, frame_bgr):
+        if self._landmarker is None:
+            return []
         height, width = frame_bgr.shape[:2]
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        rgb.flags.writeable = False
-        results = self._hands.process(rgb)
+        result = self._landmarker.detect(_to_mp_image(frame_bgr))
 
         detections = []
-        if not results.multi_hand_landmarks:
-            return detections
-
-        for hand_landmarks in results.multi_hand_landmarks:
-            points = {i: (lm.x * width, lm.y * height) for i, lm in enumerate(hand_landmarks.landmark)}
+        for hand_landmarks in result.hand_landmarks or []:
+            points = {i: (lm.x * width, lm.y * height) for i, lm in enumerate(hand_landmarks)}
             gesture = classify_gesture(points)
             xs = [p[0] for p in points.values()]
             ys = [p[1] for p in points.values()]
@@ -760,7 +667,8 @@ class HandGestureRecognizer:
         return detections
 
     def close(self):
-        self._hands.close()
+        if self._landmarker is not None:
+            self._landmarker.close()
 
 
 def tags_from_gestures(detections):

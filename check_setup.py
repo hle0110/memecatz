@@ -54,15 +54,11 @@ def check_emotion_model():
 def check_mediapipe():
     try:
         import mediapipe as mp
+        from mediapipe.tasks.python import vision as mp_vision  # noqa: F401
     except ImportError as error:
         print(f"mediapipe import failed: {error}")
         return False
-
-    face_mesh = mp.solutions.face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True)
-    face_mesh.close()
-    hands = mp.solutions.hands.Hands(static_image_mode=True, max_num_hands=2)
-    hands.close()
-    print(f"mediapipe version: {mp.__version__}, face mesh + hands initialized ok")
+    print(f"mediapipe version: {mp.__version__}, tasks API available")
     return True
 
 
@@ -74,14 +70,36 @@ def check_face_analyzer():
         return False
 
     analyzer = FaceAnalyzer()
-    if analyzer.engine == "blendshapes":
-        print("52-point blendshape model ready (best quality, downloaded/cached locally)")
-    else:
-        print("blendshape model unavailable right now (no internet on first run, or blocked network),"
-              " using the built-in geometric fallback analyzer instead. this is not an error."
-              " it retries automatically about once an hour, or delete model_cache/ to retry immediately.")
-    analyzer.close()
-    return True
+    try:
+        if not analyzer.available:
+            print(f"face model unavailable: {analyzer.error}."
+                  " the app still runs on the emotion model and gestures."
+                  " it retries about once an hour, or delete model_cache/ to retry now.")
+            return False
+        analyzer.analyze(np.zeros((480, 640, 3), dtype=np.uint8))
+        print("52-point blendshape model ready and runs on a test frame")
+        return True
+    finally:
+        analyzer.close()
+
+
+def check_hand_gestures():
+    try:
+        from vision import HandGestureRecognizer
+    except ImportError as error:
+        print(f"vision import failed: {error}")
+        return False
+
+    recognizer = HandGestureRecognizer()
+    try:
+        if not recognizer.available:
+            print(f"hand model unavailable: {recognizer.error}. the app still runs without gestures.")
+            return False
+        recognizer.analyze(np.zeros((480, 640, 3), dtype=np.uint8))
+        print("hand landmark model ready and runs on a test frame")
+        return True
+    finally:
+        recognizer.close()
 
 
 def check_face_identity():
@@ -93,7 +111,8 @@ def check_face_identity():
 
     manager = FaceIdentityManager(os.path.join(BASE_DIR, "profiles"))
     if manager.available:
-        print(f"face_recognition installed, multi-user profiles enabled ({len(manager.profiles)} saved profile(s))")
+        print(f"face_recognition installed, saved profiles available with --save-profile"
+              f" ({len(manager.profiles)} saved profile(s))")
     else:
         print("face_recognition not installed, multi-user profiles disabled (this is optional and fine)."
               " see README for how to enable it.")
@@ -166,18 +185,21 @@ def check_webcam():
 
 
 def main():
+    skip_webcam = "--no-webcam" in sys.argv  # for CI machines, which have no camera
     checks = [
         ("opencv", check_opencv),
         ("face cascade", check_cascade),
         ("emotion cnn", check_emotion_model),
-        ("mediapipe (face mesh + hands)", check_mediapipe),
+        ("mediapipe", check_mediapipe),
         ("face analyzer (blendshape model)", check_face_analyzer),
+        ("hand gestures (hand landmark model)", check_hand_gestures),
         ("face identity (optional)", check_face_identity),
-        ("real cat reaction source", check_reaction_source),
+        ("real reaction source", check_reaction_source),
         ("caption engine", check_caption_engine),
         ("vision mood boost (optional)", check_vision_mood),
-        ("webcam", check_webcam),
     ]
+    if not skip_webcam:
+        checks.append(("webcam", check_webcam))
 
     results = {}
     for name, check in checks:

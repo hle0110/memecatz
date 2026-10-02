@@ -1,0 +1,8 @@
+# Security headers for every page and file on the site. Cloudflare serves the
+# files in this folder directly, without running worker.js, so the headers for
+# them are set here. worker.js sets the same headers on its /api responses.
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://cdn.jsdelivr.net 'wasm-unsafe-eval'; connect-src 'self' https://cdn.jsdelivr.net https://storage.googleapis.com https://api.giphy.com https://api.thecatapi.com https://dog.ceo; img-src 'self' data: blob: https://*.giphy.com https://s3.us-west-2.amazonaws.com https://cdn2.thecatapi.com https://images.dog.ceo; media-src 'self' blob:; style-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'
+  Permissions-Policy: camera=(self), microphone=(), geolocation=(), payment=(), usb=()
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Content-Type-Options: nosniff

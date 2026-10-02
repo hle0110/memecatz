@@ -3,8 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MemeCatz</title>
-<meta name="description" content="Your face, but a cat says it better. Real cat and dog reactions matched to your expression, live in your browser.">
+<title>MemeCatz: your face, their reaction</title>
+<meta name="description" content="Make a face and a real cat or dog reacts, live in your browser. Your camera never leaves your device.">
+<meta name="theme-color" content="#12131a">
+<meta property="og:type" content="website">
+<meta property="og:title" content="MemeCatz">
+<meta property="og:description" content="Make a face and a real cat or dog reacts, live in your browser.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -24,10 +29,10 @@
     </div>
 
     <div class="panel">
-      <img id="reaction" class="reaction" alt="a real cat or dog reacting">
+      <img id="reaction" class="reaction" alt="">
       <img id="reaction-next" class="reaction" alt="">
       <div id="placeholder" class="placeholder">press start</div>
-      <div class="caption">
+      <div class="caption" aria-live="polite">
         <span id="cap-top" class="cap-top"></span>
         <span id="cap-bottom" class="cap-bottom"></span>
       </div>
@@ -38,7 +43,9 @@
 
   <div class="controls">
     <button id="start" class="primary">Start camera</button>
+    <button id="stop" disabled>Stop</button>
     <button id="recalibrate" disabled title="or press c">Recalibrate</button>
+    <button id="snapshot" disabled title="or press s">Save snapshot</button>
     <label for="animal">React with</label>
     <select id="animal">
       <option value="cat">cats</option>
@@ -62,16 +69,35 @@
 </main>
 
 <section class="about">
+  <h2>How it works</h2>
+  <p>
+    Press Start and hold a relaxed face for about two seconds while it learns what
+    your neutral looks like. After that, smile, frown, raise an eyebrow, or try a
+    thumbs up, a peace sign, an open palm, a fist, or pointing. Your expression is
+    matched to a real cat or dog reaction with a caption. Press c to recalibrate
+    and s to save a snapshot.
+  </p>
+
+  <h2>Privacy</h2>
+  <p>
+    Your camera feed is processed entirely in your browser and is never uploaded,
+    recorded, or stored. Snapshots are saved only to your own device. To show
+    reactions, the page loads images from Giphy, The Cat API, or Dog CEO, and the
+    face and hand runtimes from jsDelivr and Google's model storage. Giphy receives a
+    short search phrase for your current mood, such as "happy cat". Like any website,
+    these services see your IP address when they send a file. This site sets no cookies.
+  </p>
+
   <h2>Also available as a desktop app</h2>
   <p>
-    The original version runs locally in Python with a few extra features, including
-    mood matched reactions and generated captions when you supply your own keys.
+    The original version runs locally in Python, with support for several faces
+    at once and optional live captions when you supply your own keys.
     <a href="https://github.com/hle0110/memecatz">Source and downloads on GitHub</a>.
   </p>
 </section>
 
 <footer>
-  <p>MIT licensed. Built with MediaPipe, The Cat API and the Dog CEO API.</p>
+  <p>MIT licensed. Built with MediaPipe and LiteRT. Reactions from GIPHY, The Cat API, and the Dog CEO API.</p>
 </footer>
 
 <script type="module" src="app.js"></script>

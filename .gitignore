@@ -7,3 +7,7 @@ profiles/
 snapshots/
 .deps_ok
 .DS_Store
+
+# local Cloudflare dev files
+.wrangler/
+node_modules/
