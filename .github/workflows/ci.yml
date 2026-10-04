@@ -35,6 +35,9 @@ jobs:
       - name: Web reaction tests
         run: node --test tests/web_reactions.test.mjs
 
+      - name: Daily challenge tests
+        run: node --test tests/web_challenge.test.mjs
+
   full:
     runs-on: ubuntu-latest
     strategy:

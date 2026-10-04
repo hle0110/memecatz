@@ -20,11 +20,30 @@
 </header>
 
 <main>
+  <div class="modes" role="group" aria-label="Mode">
+    <button id="mode-free" class="mode-btn" aria-pressed="true">Free play</button>
+    <button id="mode-daily" class="mode-btn" aria-pressed="false">Daily challenge</button>
+  </div>
+
+  <section id="daily" class="daily hidden" aria-label="Daily challenge">
+    <p id="daily-info" class="daily-info"></p>
+    <button id="daily-start" class="primary">Play today's challenge</button>
+  </section>
+
   <div id="stage" class="stage">
     <div class="panel">
       <video id="webcam" playsinline muted></video>
       <canvas id="overlay" class="overlay"></canvas>
       <div class="loader" aria-hidden="true"></div>
+      <div id="ch-overlay" class="ch-overlay hidden">
+        <div id="ch-round" class="ch-round"></div>
+        <div id="ch-big" class="ch-big" aria-live="assertive"></div>
+        <div id="ch-hint" class="ch-hint"></div>
+        <div id="ch-bars" class="ch-bars hidden" aria-hidden="true">
+          <div class="ch-bar"><div id="ch-time" class="ch-fill"></div></div>
+          <div class="ch-bar ch-hold"><div id="ch-hold" class="ch-fill"></div></div>
+        </div>
+      </div>
       <div class="label">you</div>
     </div>
 
@@ -46,6 +65,7 @@
     <button id="stop" disabled>Stop</button>
     <button id="recalibrate" disabled title="or press c">Recalibrate</button>
     <button id="snapshot" disabled title="or press s">Save snapshot</button>
+    <button id="skip" class="hidden">Skip</button>
     <label for="animal">React with</label>
     <select id="animal">
       <option value="cat">cats</option>
@@ -55,6 +75,21 @@
 
   <p id="mood" class="mood"></p>
   <p id="status" class="status"></p>
+
+  <section id="results" class="results hidden" aria-live="polite">
+    <h2 id="res-title" class="res-title"></h2>
+    <p id="res-score" class="res-score"></p>
+    <p id="res-note" class="res-note"></p>
+    <ol id="res-rounds" class="res-rounds"></ol>
+    <label for="share-text" class="share-label">Share your result</label>
+    <textarea id="share-text" class="share-text" rows="3" readonly></textarea>
+    <div class="share-row">
+      <button id="copy-share">Copy result</button>
+      <button id="save-share">Save image</button>
+      <label class="share-face"><input id="share-face" type="checkbox"> include my face</label>
+    </div>
+    <p id="share-status" class="share-status"></p>
+  </section>
 
   <details class="advanced">
     <summary>Advanced</summary>
@@ -77,6 +112,11 @@
     matched to a real cat or dog reaction with a caption. Press c to recalibrate
     and s to save a snapshot.
   </p>
+  <p>
+    Daily challenge gives everyone the same five prompts each day, three faces and
+    two hand signs. Hold each one for under a second before the six second clock runs
+    out. Your first run of the day counts; replays are practice.
+  </p>
 
   <h2>Privacy</h2>
   <p>
@@ -86,6 +126,8 @@
     face and hand runtimes from jsDelivr and Google's model storage. Giphy receives a
     short search phrase for your current mood, such as "happy cat". Like any website,
     these services see your IP address when they send a file. This site sets no cookies.
+    Daily challenge scores and your streak are kept only in this browser's storage, and
+    a share image includes your face only if you tick the box.
   </p>
 
   <h2>Also available as a desktop app</h2>

@@ -11,3 +11,6 @@ snapshots/
 # local Cloudflare dev files
 .wrangler/
 node_modules/
+
+# output of the dev/ smoke tests and Giphy audit
+dev/output/

@@ -10,6 +10,11 @@ import {
 import { ReactionSource } from "./reactions.js";
 import { captionFor } from "./captions.js";
 import { EmotionDetector } from "./emotion.js";
+import {
+  PROMPTS, ROUND_LIMIT_MS, RoundTimer, dailyPrompts, dailyNumber, parsePromptList, isDateString,
+  utcDateString, scoreRun, formatSeconds, shareText, recordResult, currentStreak, isOfficialDone,
+  normalizeStore, bestRoundIndex, faceOnlyVector, roundSignal,
+} from "./challenge.js";
 
 // Face runs on every new camera frame. Hands and the emotion model change more
 // slowly and each cost a model run on the main thread, so they are throttled.
@@ -40,6 +45,14 @@ const HAND_MODEL =
 
 const params = new URLSearchParams(location.search);
 const FORCE_CPU = params.has("cpu");
+// Testing hooks for the daily challenge: ?prompts=happy,approval sets the
+// prompts (such runs are always practice) and ?date=2026-10-04 sets the day.
+const PROMPT_OVERRIDE = parsePromptList(params.get("prompts"));
+const DATE_OVERRIDE = isDateString(params.get("date")) ? params.get("date") : null;
+const STORE_KEY = "memecatz.daily";
+const COUNTDOWN_MS = 3000;
+const RESULT_MS = 3500;
+const RETRY_PICK_MS = 300;
 
 const el = (id) => document.getElementById(id);
 const video = el("webcam");
@@ -75,12 +88,14 @@ let frameHandle = null;
 let lastVideoTime = -1;
 let lastFrameAt = null;
 let smoothed = {};
+let smoothedFace = {};        // face signals only, for challenge face rounds
 let lastHandDetect = 0;
 let lastEmotionDetect = 0;
 let lastFerScores = null;
 let emotionBusy = false;
 let faceEpoch = 0;            // bumped when the face is lost, drops late results
 let lastGestureTags = {};
+let lastGestures = [];        // hand shapes from the latest hand check
 let overlayCtx = null;
 let lastSwitch = 0;
 let lastRotate = 0;
@@ -93,6 +108,9 @@ let showingPrimary = true;
 let lastFaceSeen = 0;
 let missedFaceFrames = 0;
 let debugOn = params.has("debug");
+let mode = "free";
+let challenge = null;         // the daily run in progress
+let lastRun = null;           // the last finished run, for sharing
 
 // Exponential moving average over the mood vector, same as smooth_mood_vector.
 export function smoothMoodVector(previous, current, alpha) {
@@ -376,6 +394,7 @@ function processFrame(nowMs) {
         const g = classifyGesture(lm, video.videoWidth, video.videoHeight);
         if (g) gestures.push(g);
       }
+      lastGestures = gestures;
       lastGestureTags = tagsFromGestures(gestures);
     } catch (err) {
       console.warn("hand frame skipped:", err.message);
@@ -392,14 +411,16 @@ function processFrame(nowMs) {
       setStatus("can't see your face. face the camera with good light.");
       setMoodText("");
     }
+    challengeTick(null, [], false);
     return;
   }
 
   if (calibrator.calibrating) {
     setStatus(`hold a relaxed face while it calibrates... ${Math.round(calibrator.progress(nowMs) * 100)}%`);
+    challengeTick(null, [], false);
     return;
   }
-  if (!strengths) return;
+  if (!strengths) { challengeTick(null, [], false); return; }
 
   // The emotion model's 7 scores fill the same slot they fill on desktop.
   // Without the model, a synthetic neutral keeps the vector honest.
@@ -408,12 +429,14 @@ function processFrame(nowMs) {
   const alpha = rateAdjustedAlpha(MOOD_SMOOTHING_ALPHA, dt, MOOD_SMOOTHING_REFERENCE_S);
   smoothed = smoothMoodVector(smoothed, vector, alpha);
   const ranked = topTags(smoothed, MOOD_TOP_LIMIT, MOOD_FLOOR);
+  smoothedFace = smoothMoodVector(smoothedFace, faceOnlyVector(ferScores, auTags), alpha);
   const tags = ranked.map(([t]) => t);
 
   setMoodText(friendlyMood(ranked));
   const emotionNote = emotion.ready ? "  |  emotion model on" : emotion.failed ? "" : "  |  emotion model loading";
   setStatus(reactions.describeSource() + emotionNote);
-  updateReaction(tags, now);
+  if (challenge) challengeTick(topTags(smoothedFace, MOOD_TOP_LIMIT, MOOD_FLOOR), lastGestures, true);
+  else if (mode === "free") updateReaction(tags, now);
   renderDebug({ deltas, auTags, gestureTags: lastGestureTags, vector, ranked, neutral, fer: lastFerScores, fps: fpsValue });
 }
 
@@ -477,6 +500,7 @@ async function start() {
     }
     calibrator.startCalibration();
     smoothed = {};
+    smoothedFace = {};
     lastFrameAt = null;
     lastVideoTime = -1;
     lastFaceSeen = Date.now();
@@ -497,6 +521,7 @@ async function start() {
 }
 
 function stop() {
+  abortChallenge();
   running = false;
   cancelFrames();
   stopCamera();
@@ -601,6 +626,441 @@ function takeSnapshot() {
 }
 
 // ---------------------------------------------------------------------------
+// Daily challenge. The rules live in challenge.js; this part drives them with
+// the live mood and shows the prompts, reactions and results.
+// ---------------------------------------------------------------------------
+
+const modeFreeBtn = el("mode-free");
+const modeDailyBtn = el("mode-daily");
+const dailyPanel = el("daily");
+const dailyInfo = el("daily-info");
+const dailyStartBtn = el("daily-start");
+const skipBtn = el("skip");
+const chOverlay = el("ch-overlay");
+const chRound = el("ch-round");
+const chBig = el("ch-big");
+const chHint = el("ch-hint");
+const chBars = el("ch-bars");
+const chTime = el("ch-time");
+const chHold = el("ch-hold");
+const resultsPanel = el("results");
+const shareTextBox = el("share-text");
+const shareStatus = el("share-status");
+const shareFace = el("share-face");
+
+const PASS_LINES = ["nailed it!", "purrfect!", "textbook!", "too easy!", "the cat approves!"];
+const SITE_URL = `${location.origin}/`;
+
+function moodWord(tag) {
+  if (tag === "neutral") return "calm";
+  return MOOD_WORDS[tag] || tag.replace(/_/g, " ");
+}
+
+function setText(node, text) {
+  if (node && node.textContent !== text) node.textContent = text;
+}
+
+function challengeDate() {
+  return DATE_OVERRIDE || utcDateString(new Date());
+}
+
+// Browser storage can be missing or blocked (private windows, strict
+// settings). The challenge still works then, it just remembers nothing.
+function loadStore() {
+  try {
+    return normalizeStore(JSON.parse(localStorage.getItem(STORE_KEY) || "null"));
+  } catch (err) {
+    return normalizeStore(null);
+  }
+}
+
+function saveStore(store) {
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify(store));
+  } catch (err) {
+    console.warn("could not save the daily result:", err && err.message ? err.message : err);
+  }
+}
+
+function renderDailyInfo() {
+  const date = challengeDate();
+  const store = loadStore();
+  const parts = [`Daily #${dailyNumber(date)}`];
+  if (PROMPT_OVERRIDE) parts.push("test prompts, practice only");
+  const streak = currentStreak(store, date);
+  if (streak) parts.push(`streak ${streak}`);
+  if (store.best) parts.push(`best ${store.best.passes}/${store.best.total} · ${formatSeconds(store.best.totalMs)} s`);
+  const done = isOfficialDone(store, date);
+  if (done) parts.push(`today ${store.official.passes}/${store.official.total} · ${formatSeconds(store.official.totalMs)} s`);
+  setText(dailyInfo, parts.join("  ·  "));
+  setText(dailyStartBtn, done || PROMPT_OVERRIDE ? "Play again (practice)" : "Play today's challenge");
+}
+
+function setMode(next) {
+  if (next === mode) return;
+  if (challenge) abortChallenge();
+  mode = next;
+  modeFreeBtn.setAttribute("aria-pressed", String(mode === "free"));
+  modeDailyBtn.setAttribute("aria-pressed", String(mode === "daily"));
+  dailyPanel.classList.toggle("hidden", mode !== "daily");
+  if (mode === "daily") renderDailyInfo();
+  else {
+    resultsPanel.classList.add("hidden");
+    lastMoodKey = null;
+    lastSwitch = 0;
+  }
+}
+
+function showOverlay({ round = "", big = "", hint = "", counting = false, bars = false, phase = "", prompt = "" }) {
+  chOverlay.classList.remove("hidden");
+  chOverlay.classList.toggle("counting", counting);
+  chOverlay.dataset.phase = phase;
+  chOverlay.dataset.prompt = prompt;
+  setText(chRound, round);
+  setText(chBig, big);
+  setText(chHint, hint);
+  chBars.classList.toggle("hidden", !bars);
+}
+
+function hideOverlay() {
+  chOverlay.classList.add("hidden");
+  chOverlay.dataset.phase = "";
+  chOverlay.dataset.prompt = "";
+}
+
+function roundLabel(c) {
+  return `round ${c.index + 1} of ${c.prompts.length}`;
+}
+
+async function startDaily() {
+  if (challenge) return;
+  const date = challengeDate();
+  const prompts = PROMPT_OVERRIDE || dailyPrompts(date);
+  challenge = {
+    date,
+    number: dailyNumber(date),
+    prompts,
+    practice: !!PROMPT_OVERRIDE || isOfficialDone(loadStore(), date),
+    index: 0,
+    phase: "waiting",
+    phaseStart: performance.now(),
+    timer: null,
+    rounds: [],
+    lastPickTry: 0,
+  };
+  resultsPanel.classList.add("hidden");
+  dailyStartBtn.disabled = true;
+  skipBtn.classList.remove("hidden");
+  // Reactions for every target, fetched now so each pass shows one at once.
+  reactions.warm(prompts);
+  if (!displayedEntry) placeholder.textContent = "your reactions show up here";
+  showOverlay({ round: `Daily #${challenge.number}`, big: "get ready", hint: "hold a relaxed face first", phase: "waiting" });
+  if (!running) {
+    await start();
+    if (!running) abortChallenge();
+  } else if (!calibrator.calibrating) {
+    beginCountdown(performance.now());
+  }
+}
+
+function abortChallenge() {
+  if (!challenge) return;
+  challenge = null;
+  hideOverlay();
+  skipBtn.classList.add("hidden");
+  dailyStartBtn.disabled = false;
+  lastMoodKey = null;
+  lastSwitch = 0;
+}
+
+function beginCountdown(now) {
+  challenge.phase = "countdown";
+  challenge.phaseStart = now;
+}
+
+function beginRound(now, faceRanked, gestures, faceVisible) {
+  const c = challenge;
+  c.phase = "round";
+  c.phaseStart = now;
+  c.timer = new RoundTimer(c.prompts[c.index]);
+  c.timer.update(now, roundSignal(c.prompts[c.index], faceRanked, gestures), faceVisible);
+}
+
+// A small, mirrored still of the camera at the end of a round. It stays in the
+// page and is used only if "include my face" is ticked for the share image.
+function captureFace() {
+  if (!video.videoWidth) return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = 480;
+  canvas.height = 540;
+  drawCover(canvas.getContext("2d"), video, video.videoWidth, video.videoHeight, 0, 0, 480, 540, true);
+  return canvas;
+}
+
+function roundMessage(r) {
+  if (r.passed) return `${PASS_LINES[Math.floor(Math.random() * PASS_LINES.length)]} ${formatSeconds(r.ms)} s`;
+  if (r.skipped) return "skipped, on to the next one";
+  if (!r.detected) return "so close! hold it a little longer";
+  return `close one! you looked ${moodWord(r.detected)} instead`;
+}
+
+function finishRound(outcome, now) {
+  const c = challenge;
+  const round = {
+    ...outcome,
+    mood: outcome.passed ? outcome.prompt : (outcome.detected || "neutral"),
+    message: "",
+    entry: null,
+    caption: null,
+    face: captureFace(),
+  };
+  round.message = roundMessage(round);
+  c.rounds.push(round);
+  c.phase = "result";
+  c.phaseStart = now;
+  c.lastPickTry = 0;
+  // The previous round's reaction must not stand in for this one.
+  reactionImg.classList.remove("visible");
+  reactionImgNext.classList.remove("visible");
+  setText(capTop, "");
+  setText(capBottom, "");
+  if (attributionEl) attributionEl.textContent = "";
+  placeholder.classList.remove("hidden");
+  placeholder.textContent = "connecting for a real reaction...";
+  showRoundReaction(round, now);
+}
+
+function showRoundReaction(round, now) {
+  if (round.entry || now - challenge.lastPickTry < RETRY_PICK_MS) return;
+  challenge.lastPickTry = now;
+  const pick = reactions.pick([round.mood], currentEntry ? currentEntry.key : null);
+  if (!pick) return;
+  round.entry = pick;
+  round.caption = captionFor(round.mood, currentCaption);
+  currentEntry = pick;
+  currentCaption = round.caption;
+  swapReaction(pick, round.caption);
+}
+
+// faceRanked: smoothed face-only moods; gestures: the latest hand shapes.
+function challengeTick(faceRanked, gestures, faceVisible) {
+  const c = challenge;
+  if (!c) return;
+  const now = performance.now();
+  const prompt = c.prompts[c.index];
+  const info = PROMPTS[prompt];
+
+  if (c.phase === "waiting") {
+    if (calibrator.calibrating || !faceVisible) return;
+    beginCountdown(now);
+  }
+
+  if (c.phase === "countdown") {
+    const left = COUNTDOWN_MS - (now - c.phaseStart);
+    if (left > 0) {
+      showOverlay({ round: roundLabel(c), big: String(Math.ceil(left / 1000)), hint: `next: ${info.text}`, counting: true, phase: "countdown", prompt });
+      return;
+    }
+    beginRound(now, faceRanked, gestures, faceVisible);
+  }
+
+  if (c.phase === "round") {
+    const outcome = c.timer.update(now, roundSignal(prompt, faceRanked, gestures), faceVisible);
+    showOverlay({
+      round: roundLabel(c),
+      big: info.text,
+      hint: c.timer.paused ? "paused, can't see your face" : info.hint,
+      bars: true,
+      phase: "round",
+      prompt,
+    });
+    chTime.style.width = `${(c.timer.remainingMs / ROUND_LIMIT_MS) * 100}%`;
+    chHold.style.width = `${c.timer.holdProgress * 100}%`;
+    if (outcome) finishRound(outcome, now);
+    return;
+  }
+
+  if (c.phase === "result") {
+    const round = c.rounds[c.rounds.length - 1];
+    showOverlay({ round: roundLabel(c), big: round.passed ? "😺" : "⬛", hint: round.message, phase: "result", prompt });
+    showRoundReaction(round, now);
+    if (now - c.phaseStart < RESULT_MS) return;
+    c.index += 1;
+    if (c.index < c.prompts.length) beginCountdown(now);
+    else finishChallenge();
+  }
+}
+
+function skipRound() {
+  const c = challenge;
+  if (!c || (c.phase !== "round" && c.phase !== "countdown")) return;
+  const now = performance.now();
+  if (c.phase === "countdown") beginRound(now, null, [], false);
+  finishRound(c.timer.skip(), now);
+}
+
+function finishChallenge() {
+  const c = challenge;
+  const score = scoreRun(c.rounds);
+  const result = {
+    date: c.date,
+    number: c.number,
+    passes: score.passes,
+    total: score.total,
+    totalMs: Math.round(score.totalMs),
+    marks: c.rounds.map((r) => r.passed),
+    prompts: c.prompts,
+  };
+  const recorded = recordResult(loadStore(), result, { practice: c.practice });
+  if (recorded.official) saveStore(recorded.store);
+  lastRun = { ...result, practice: !recorded.official, rounds: c.rounds };
+  challenge = null;
+  hideOverlay();
+  skipBtn.classList.add("hidden");
+  dailyStartBtn.disabled = false;
+  renderDailyInfo();
+  renderResults(lastRun);
+}
+
+function renderResults(run) {
+  const flawless = run.passes === run.total;
+  setText(el("res-title"), `MemeCatz Daily #${run.number}${run.practice ? " (practice)" : ""}`);
+  setText(el("res-score"), `${run.passes}/${run.total} · ${formatSeconds(run.totalMs)} s`);
+  const streak = currentStreak(loadStore(), run.date);
+  const note = run.practice
+    ? "practice run, your first run of the day is the one that counts"
+    : `${flawless ? "flawless! " : ""}streak ${streak} ${streak === 1 ? "day" : "days"}, see you tomorrow`;
+  setText(el("res-note"), note);
+
+  const list = el("res-rounds");
+  list.textContent = "";
+  for (const r of run.rounds) {
+    const li = document.createElement("li");
+    li.append(`${r.passed ? "😺" : "⬛"} ${PROMPTS[r.prompt].text} `);
+    const detail = document.createElement("span");
+    detail.className = "res-detail";
+    detail.textContent = r.passed ? `${formatSeconds(r.ms)} s` : r.message;
+    li.append(detail);
+    list.append(li);
+  }
+  shareTextBox.value = shareText(run, SITE_URL);
+  setText(shareStatus, "");
+  resultsPanel.classList.remove("hidden");
+}
+
+async function copyShare() {
+  const text = shareTextBox.value;
+  try {
+    await navigator.clipboard.writeText(text);
+    setText(shareStatus, "copied!");
+  } catch (err) {
+    shareTextBox.select();
+    setText(shareStatus, "press Ctrl+C or Cmd+C to copy");
+  }
+}
+
+function loadCorsImage(url) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const timer = setTimeout(() => resolve(null), 8000);
+    img.crossOrigin = "anonymous";
+    img.onload = () => { clearTimeout(timer); resolve(img); };
+    img.onerror = () => { clearTimeout(timer); resolve(null); };
+    img.src = url;
+  });
+}
+
+function drawText(ctx, text, x, y, size, color, weight = 700, align = "center", maxWidth = Infinity) {
+  ctx.font = `${weight} ${size}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
+  while (ctx.measureText(text).width > maxWidth && size > 12) {
+    size -= 1;
+    ctx.font = `${weight} ${size}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
+  }
+  ctx.fillStyle = color;
+  ctx.textAlign = align;
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, x, y);
+}
+
+// 1080x1080 PNG: score, the best round's reaction (only images whose host
+// allows drawing them, so not The Cat API photos), and each round.
+async function saveShareImage() {
+  if (!lastRun) return;
+  const run = lastRun;
+  setText(shareStatus, "making your image...");
+  const S = 1080;
+  const canvas = document.createElement("canvas");
+  canvas.width = S;
+  canvas.height = S;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#12131a";
+  ctx.fillRect(0, 0, S, S);
+
+  drawText(ctx, `MemeCatz Daily #${run.number}${run.practice ? " (practice)" : ""}`, S / 2, 80, 54, "#f2f3f7", 800);
+  drawText(ctx, `${run.passes}/${run.total} · ${formatSeconds(run.totalMs)} s`, S / 2, 170, 84, "#78e08f", 800);
+
+  const idx = bestRoundIndex(run.rounds, (r) => r.entry && r.entry.cors);
+  const img = idx >= 0 ? await loadCorsImage(run.rounds[idx].entry.url) : null;
+  const withFace = shareFace.checked;
+  const faceRound = idx >= 0 ? run.rounds[idx] : run.rounds[bestRoundIndex(run.rounds)];
+  const face = withFace && faceRound ? faceRound.face : null;
+  const top = 250, h = 540;
+  const box = face ? { x: 550, w: 470 } : { x: 60, w: 960 };
+  ctx.fillStyle = "#1c1e28";
+  ctx.fillRect(60, top, 960, h);
+  if (face) drawCover(ctx, face, face.width, face.height, 60, top, 470, h);
+  if (img) {
+    drawCover(ctx, img, img.naturalWidth, img.naturalHeight, box.x, top, box.w, h);
+    const r = run.rounds[idx];
+    if (r.caption) {
+      drawCaptionLine(ctx, r.caption.top, box.x + box.w / 2, top + 16, box.w - 32, "top");
+      drawCaptionLine(ctx, r.caption.bottom, box.x + box.w / 2, top + h - 16, box.w - 32, "bottom");
+    }
+    if (r.entry.attribution) drawText(ctx, r.entry.attribution, box.x + box.w - 12, top + h + 24, 22, "#9aa0b4", 600, "right");
+  } else {
+    drawText(ctx, "no reaction image could be saved this time", box.x + box.w / 2, top + h / 2, 26, "#9aa0b4", 500);
+  }
+
+  const n = run.rounds.length;
+  const tileW = 180, gap = (960 - n * tileW) / Math.max(1, n - 1);
+  run.rounds.forEach((r, i) => {
+    const x = 60 + i * (tileW + gap);
+    const y = 840;
+    ctx.fillStyle = r.passed ? "#78e08f" : "#2e3142";
+    ctx.fillRect(x, y, tileW, 140);
+    const color = r.passed ? "#0f1a12" : "#f2f3f7";
+    drawText(ctx, PROMPTS[r.prompt].text, x + tileW / 2, y + 48, 26, color, 700, "center", tileW - 16);
+    drawText(ctx, r.passed ? `${formatSeconds(r.ms)} s` : r.skipped ? "skipped" : "missed", x + tileW / 2, y + 96, 30, color, 800);
+  });
+  drawText(ctx, SITE_URL.replace(/^https?:\/\//, "").replace(/\/$/, ""), S / 2, 1035, 26, "#9aa0b4", 500);
+
+  try {
+    canvas.toBlob((blob) => {
+      if (!blob) { setText(shareStatus, "could not make the image"); return; }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `memecatz-daily-${run.number}.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      setText(shareStatus, "image saved");
+    }, "image/png");
+  } catch (err) {
+    console.warn("share image failed:", err.message);
+    setText(shareStatus, "could not make the image");
+  }
+}
+
+modeFreeBtn.addEventListener("click", () => setMode("free"));
+modeDailyBtn.addEventListener("click", () => setMode("daily"));
+dailyStartBtn.addEventListener("click", startDaily);
+skipBtn.addEventListener("click", skipRound);
+el("copy-share").addEventListener("click", copyShare);
+el("save-share").addEventListener("click", saveShareImage);
+
+// ---------------------------------------------------------------------------
 // Controls
 // ---------------------------------------------------------------------------
 
@@ -632,6 +1092,7 @@ function recalibrate() {
   if (!running) return;
   calibrator.startCalibration();
   smoothed = {};
+  smoothedFace = {};
   setStatus("recalibrating, hold a relaxed face");
 }
 
@@ -653,7 +1114,7 @@ document.addEventListener("keydown", (e) => {
 if (animalSel)
   animalSel.addEventListener("change", () => {
     reactions.setAnimal(animalSel.value);
-    reactions.warm(["neutral", "happy"]);
+    reactions.warm(challenge ? challenge.prompts : ["neutral", "happy"]);
     lastMoodKey = null;
     lastRotate = 0;
   });
