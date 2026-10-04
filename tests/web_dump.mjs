@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { combine, topTags, AU_TAG_TO_MOOD } from "../web/mood.js";
 import { STATIC_CAPTIONS } from "../web/captions.js";
-import { MOOD_QUERY_TEMPLATES, DOG_BREEDS, queryForMood } from "../web/reactions.js";
+import { MOOD_QUERIES, DOG_BREEDS, queriesForMood } from "../web/reactions.js";
 import { classifyGesturePoints, GESTURE_TO_TAGS, FEATURE_KEYS, rateAdjustedAlpha } from "../web/face.js";
 import { toSquare, cropRect, grayOf } from "../web/emotion.js";
 
@@ -11,8 +11,8 @@ const req = JSON.parse(readFileSync(0, "utf8"));
 
 const out = {
   captions: STATIC_CAPTIONS,
-  templates: MOOD_QUERY_TEMPLATES,
-  queries: Object.fromEntries(["happy", "neutral", "made_up_tag"].map((m) => [m, queryForMood(m, "dog")])),
+  moodQueries: MOOD_QUERIES,
+  queries: Object.fromEntries(["happy", "neutral", "made_up_tag"].map((m) => [m, queriesForMood(m, "dog")])),
   dogBreeds: DOG_BREEDS,
   gestureToTags: GESTURE_TO_TAGS,
   auTagToMood: AU_TAG_TO_MOOD,

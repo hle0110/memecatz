@@ -22,7 +22,7 @@ import numpy as np  # noqa: E402
 
 from mood import combine, top_tags, AU_TAG_TO_MOOD  # noqa: E402
 from captions import STATIC_CAPTIONS  # noqa: E402
-from reactions import MOOD_QUERY_TEMPLATES, DOG_BREEDS, query_for_mood  # noqa: E402
+from reactions import MOOD_QUERIES, DOG_BREEDS, queries_for_mood  # noqa: E402
 from vision import classify_gesture, GESTURE_TO_TAGS, BLENDSHAPE_NAMES, EmotionDetector, EMOTION_PADDING, EMOTION_OFFSET_X, EMOTION_OFFSET_Y  # noqa: E402
 
 FER = ["angry", "disgust", "fear", "happy", "sad", "surprise", "neutral"]
@@ -103,8 +103,13 @@ def main():
 
     py_captions = {k: [list(p) for p in v] for k, v in STATIC_CAPTIONS.items()}
     check("captions identical", py_captions == js["captions"])
-    check("giphy search phrases identical", MOOD_QUERY_TEMPLATES == js["templates"])
-    check("query fallback identical", {m: query_for_mood(m, "dog") for m in js["queries"]} == js["queries"])
+    as_lists = {a: {m: [list(p) for p in ps] for m, ps in t.items()} for a, t in MOOD_QUERIES.items()}
+    check("giphy search phrases identical", as_lists == js["moodQueries"])
+    check("query fallback identical",
+          {m: [list(p) for p in queries_for_mood(m, "dog")] for m in js["queries"]} == js["queries"])
+    bad_depth = [(a, m, p) for a, t in MOOD_QUERIES.items() for m, ps in t.items() for p, d in ps
+                 if not (isinstance(d, int) and 1 <= d <= 25) or a not in p.split()]
+    check("every phrase names its animal and has a sane depth", not bad_depth, bad_depth)
     check("dog breed list identical", list(DOG_BREEDS) == js["dogBreeds"])
     check("gesture tag map identical", GESTURE_TO_TAGS == js["gestureToTags"])
     check("expression tag map identical", AU_TAG_TO_MOOD == js["auTagToMood"])
@@ -112,7 +117,7 @@ def main():
 
     reachable = set(FER) | {t for m in AU_TAG_TO_MOOD.values() for t in m} | set(GESTURE_TAGS)
     missing_captions = sorted(t for t in reachable if t not in STATIC_CAPTIONS)
-    missing_queries = sorted(t for t in reachable if t not in MOOD_QUERY_TEMPLATES)
+    missing_queries = sorted(f"{a}:{t}" for a in ("cat", "dog") for t in reachable if t not in MOOD_QUERIES[a])
     check("every reachable mood has captions", not missing_captions, missing_captions)
     check("every reachable mood has a search phrase", not missing_queries, missing_queries)
 

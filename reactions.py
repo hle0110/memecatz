@@ -50,37 +50,70 @@ DOG_BREEDS = (
     "poodle/toy", "pug", "retriever/golden", "samoyed", "shiba", "shihtzu",
 )
 
-MOOD_QUERY_TEMPLATES = {
-    "happy": "happy {animal}",
-    "sad": "sad {animal}",
-    "angry": "angry {animal}",
-    "surprise": "surprised {animal}",
-    "fear": "scared {animal}",
-    "disgust": "disgusted {animal}",
-    "neutral": "{animal} staring blankly",
-    "smug": "smug {animal}",
-    "confused": "confused {animal}",
-    "mischief": "mischievous {animal}",
-    "annoyed": "annoyed {animal}",
-    "approval": "{animal} nodding approval",
-    "disapproval": "{animal} side eye disapproval",
-    "chill": "relaxed {animal}",
-    "suspicious": "suspicious {animal}",
-    "triumph": "{animal} victory",
-    "anxious": "nervous {animal}",
-    "bored": "bored {animal}",
-    "mocking": "sassy {animal}",
-    "stop": "{animal} stop paw",
-    "determined": "determined {animal}",
-    "focused": "focused {animal}",
+# Giphy search phrases per mood, the same as MOOD_QUERIES in web/reactions.js.
+# Each phrase was chosen by looking at what Giphy actually returns for it:
+# real animals showing that mood, not drawings or people. The number is how
+# many of its top results to use. Past that point a phrase's results drift
+# off-mood or to cartoons, so the app moves on to the next phrase instead of
+# digging deeper.
+# Checked by eye in October 2026. Giphy's results change over time, so it is
+# worth looking at them again every few months.
+MOOD_QUERIES = {
+    "cat": {
+        "happy": [("cat smiling", 12), ("happy cat", 7)],
+        "sad": [("crying cat", 11), ("sad cat", 11)],
+        "angry": [("angry cat", 12)],
+        "surprise": [("shocked cat", 12), ("surprised cat", 12)],
+        "fear": [("scared cat", 12)],
+        "disgust": [("disgusted cat", 7)],
+        "neutral": [("cat stare", 11)],
+        "smug": [("cat smirk", 10)],
+        "confused": [("cat huh", 12), ("confused cat", 5)],
+        "mischief": [("cat knocking things off", 12), ("sneaky cat", 9)],
+        "annoyed": [("annoyed cat", 12), ("unimpressed cat", 12), ("grumpy cat", 12)],
+        "approval": [("cat thumbs up", 3), ("cat smiling", 12)],
+        "disapproval": [("cat side eye", 9)],
+        "chill": [("relaxed cat", 12)],
+        "suspicious": [("suspicious cat", 5), ("cat side eye", 9)],
+        "triumph": [("cat winning", 3), ("cat smiling", 12)],
+        "anxious": [("scared cat", 12)],
+        "bored": [("bored cat", 12), ("cat yawning", 11)],
+        "mocking": [("cat laughing", 10), ("sassy cat", 12)],
+        "stop": [("cat high five", 3), ("cat no", 4), ("cat says no", 3)],
+        "determined": [("serious cat", 12), ("cat butt wiggle", 10)],
+        "focused": [("cat butt wiggle", 10), ("serious cat", 12)],
+    },
+    "dog": {
+        "happy": [("dog smiling", 12), ("happy dog", 5)],
+        "sad": [("sad dog", 5), ("dog crying", 2), ("depressed dog", 1)],
+        "angry": [("angry dog", 12)],
+        "surprise": [("shocked dog", 10), ("surprised dog", 9)],
+        "fear": [("scared dog", 9)],
+        "disgust": [("disgusted dog", 7)],
+        "neutral": [("dog stare", 12), ("dog staring", 12)],
+        "smug": [("smug dog", 6)],
+        "confused": [("dog head tilt", 12), ("confused dog", 12)],
+        "mischief": [("dog zoomies", 10), ("guilty dog", 2)],
+        "annoyed": [("dog side eye", 5), ("unimpressed dog", 3), ("dog eye roll", 2)],
+        "approval": [("dog yes", 4), ("dog thumbs up", 2), ("dog smiling", 12)],
+        "disapproval": [("dog side eye", 5), ("dog judging", 6)],
+        "chill": [("lazy dog", 10), ("sleepy dog", 3)],
+        "suspicious": [("suspicious dog", 2), ("dog side eye", 5)],
+        "triumph": [("excited dog", 12), ("dog winning", 3)],
+        "anxious": [("nervous dog", 5), ("scared dog", 9)],
+        "bored": [("bored dog", 12), ("dog yawning", 6)],
+        "mocking": [("dog grin", 5), ("dog smiling", 12)],
+        "stop": [("dog high five", 8)],
+        "determined": [("serious dog", 12)],
+        "focused": [("serious dog", 12), ("dog staring", 12)],
+    },
 }
 
 
-def query_for_mood(mood_tag, animal="cat"):
-    template = MOOD_QUERY_TEMPLATES.get(mood_tag)
-    if template is None:
-        return f"{mood_tag.replace('_', ' ')} {animal}"
-    return template.format(animal=animal)
+def queries_for_mood(mood_tag, animal="cat"):
+    """[(phrase, depth), ...] for a mood, with a plain fallback for unknown moods."""
+    table = MOOD_QUERIES["dog" if animal == "dog" else "cat"]
+    return table.get(mood_tag) or [(f"{mood_tag.replace('_', ' ')} {animal}", 8)]
 
 
 def decode_animation(data, max_frames=GIPHY_MAX_FRAMES):
@@ -134,7 +167,7 @@ class AnimalReactionDataset:
         self.cat_api_key = cat_api_key or os.environ.get("CAT_API_KEY") or CAT_API_DEMO_KEY
         self.giphy_enabled = bool(self.giphy_api_key)
         self._giphy_entries = {}      # mood -> entries in Giphy's order, this session only
-        self._giphy_offsets = {}
+        self._giphy_phrase_index = {}  # mood -> which of its phrases to search next
         self._giphy_failed_at = {}
         self._general = None
         self._status = self._read_status()
@@ -239,12 +272,14 @@ class AnimalReactionDataset:
         if time.time() - self._giphy_failed_at.get(mood_tag, 0) < GIPHY_RETRY_COOLDOWN:
             return None
 
-        offset = self._giphy_offsets.get(mood_tag, 0)
+        phrases = queries_for_mood(mood_tag, animal=self.animal)
+        index = self._giphy_phrase_index.get(mood_tag, 0) % len(phrases)
+        query, depth = phrases[index]
         params = {
             "api_key": self.giphy_api_key,
-            "q": query_for_mood(mood_tag, animal=self.animal),
-            "limit": RESULTS_PER_MOOD,
-            "offset": offset,
+            "q": query,
+            "limit": depth,
+            "offset": 0,
             "rating": "g",
             "lang": "en",
         }
@@ -276,8 +311,8 @@ class AnimalReactionDataset:
                 "attribution": "Powered By GIPHY",
             })
 
-        # Past the end of the results, start from the top on the next search.
-        self._giphy_offsets[mood_tag] = 0 if len(data) < RESULTS_PER_MOOD else offset + len(data)
+        # Next time, the next phrase. After the last one, back to the first.
+        self._giphy_phrase_index[mood_tag] = index + 1
         if not entries:
             self._giphy_failed_at[mood_tag] = time.time()
             return None
@@ -427,7 +462,7 @@ class AnimalReactionDataset:
         if os.path.isdir(self.cache_dir):
             shutil.rmtree(self.cache_dir, ignore_errors=True)
         self._giphy_entries = {}
-        self._giphy_offsets = {}
+        self._giphy_phrase_index = {}
         self._general = None
         self._status = {}
 

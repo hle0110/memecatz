@@ -156,6 +156,39 @@ def test_damaged_profiles_file_is_skipped_not_fatal():
         assert manager.profiles == []
 
 
+def test_giphy_rotates_phrases_with_depth_limits():
+    import tempfile
+    import reactions
+    calls = []
+
+    class Reply:
+        status_code = 200
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {"data": [{"id": f"g{len(calls)}x{i}", "images": {"fixed_height": {"url": "https://media.giphy.com/x.gif"}}}
+                             for i in range(3)]}
+
+    def fake_get(url, params=None, **kwargs):
+        calls.append(dict(params or {}))
+        return Reply()
+
+    real_get = reactions.requests.get
+    reactions.requests.get = fake_get
+    try:
+        with tempfile.TemporaryDirectory() as folder:
+            dataset = reactions.AnimalReactionDataset(folder, animal="dog", giphy_api_key="test-key")
+            phrases = reactions.queries_for_mood("annoyed", "dog")
+            for _ in range(len(phrases) + 1):
+                dataset._giphy_entries["annoyed"] = []
+                assert dataset.get_for_mood("annoyed")
+    finally:
+        reactions.requests.get = real_get
+    expected = list(phrases) + [phrases[0]]
+    assert [(c["q"], c["limit"]) for c in calls] == expected
+    assert all(c["offset"] == 0 for c in calls)
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for test in tests:

@@ -30,37 +30,69 @@ export const DOG_BREEDS = [
   "poodle/toy", "pug", "retriever/golden", "samoyed", "shiba", "shihtzu",
 ];
 
-// Same as MOOD_QUERY_TEMPLATES in reactions.py. Each mood maps to a search
-// phrase; {animal} is filled with cat or dog.
-export const MOOD_QUERY_TEMPLATES = {
-  happy: "happy {animal}",
-  sad: "sad {animal}",
-  angry: "angry {animal}",
-  surprise: "surprised {animal}",
-  fear: "scared {animal}",
-  disgust: "disgusted {animal}",
-  neutral: "{animal} staring blankly",
-  smug: "smug {animal}",
-  confused: "confused {animal}",
-  mischief: "mischievous {animal}",
-  annoyed: "annoyed {animal}",
-  approval: "{animal} nodding approval",
-  disapproval: "{animal} side eye disapproval",
-  chill: "relaxed {animal}",
-  suspicious: "suspicious {animal}",
-  triumph: "{animal} victory",
-  anxious: "nervous {animal}",
-  bored: "bored {animal}",
-  mocking: "sassy {animal}",
-  stop: "{animal} stop paw",
-  determined: "determined {animal}",
-  focused: "focused {animal}",
+// Giphy search phrases per mood, the same as MOOD_QUERIES in reactions.py.
+// Each phrase was chosen by looking at what Giphy actually returns for it:
+// real animals showing that mood, not drawings or people. The number is how
+// many of its top results to use. Past that point a phrase's results drift
+// off-mood or to cartoons, so the app moves on to the next phrase instead of
+// digging deeper.
+// Checked by eye in October 2026. Giphy's results change over time, so it is
+// worth looking at them again every few months.
+export const MOOD_QUERIES = {
+  cat: {
+    happy: [["cat smiling", 12], ["happy cat", 7]],
+    sad: [["crying cat", 11], ["sad cat", 11]],
+    angry: [["angry cat", 12]],
+    surprise: [["shocked cat", 12], ["surprised cat", 12]],
+    fear: [["scared cat", 12]],
+    disgust: [["disgusted cat", 7]],
+    neutral: [["cat stare", 11]],
+    smug: [["cat smirk", 10]],
+    confused: [["cat huh", 12], ["confused cat", 5]],
+    mischief: [["cat knocking things off", 12], ["sneaky cat", 9]],
+    annoyed: [["annoyed cat", 12], ["unimpressed cat", 12], ["grumpy cat", 12]],
+    approval: [["cat thumbs up", 3], ["cat smiling", 12]],
+    disapproval: [["cat side eye", 9]],
+    chill: [["relaxed cat", 12]],
+    suspicious: [["suspicious cat", 5], ["cat side eye", 9]],
+    triumph: [["cat winning", 3], ["cat smiling", 12]],
+    anxious: [["scared cat", 12]],
+    bored: [["bored cat", 12], ["cat yawning", 11]],
+    mocking: [["cat laughing", 10], ["sassy cat", 12]],
+    stop: [["cat high five", 3], ["cat no", 4], ["cat says no", 3]],
+    determined: [["serious cat", 12], ["cat butt wiggle", 10]],
+    focused: [["cat butt wiggle", 10], ["serious cat", 12]],
+  },
+  dog: {
+    happy: [["dog smiling", 12], ["happy dog", 5]],
+    sad: [["sad dog", 5], ["dog crying", 2], ["depressed dog", 1]],
+    angry: [["angry dog", 12]],
+    surprise: [["shocked dog", 10], ["surprised dog", 9]],
+    fear: [["scared dog", 9]],
+    disgust: [["disgusted dog", 7]],
+    neutral: [["dog stare", 12], ["dog staring", 12]],
+    smug: [["smug dog", 6]],
+    confused: [["dog head tilt", 12], ["confused dog", 12]],
+    mischief: [["dog zoomies", 10], ["guilty dog", 2]],
+    annoyed: [["dog side eye", 5], ["unimpressed dog", 3], ["dog eye roll", 2]],
+    approval: [["dog yes", 4], ["dog thumbs up", 2], ["dog smiling", 12]],
+    disapproval: [["dog side eye", 5], ["dog judging", 6]],
+    chill: [["lazy dog", 10], ["sleepy dog", 3]],
+    suspicious: [["suspicious dog", 2], ["dog side eye", 5]],
+    triumph: [["excited dog", 12], ["dog winning", 3]],
+    anxious: [["nervous dog", 5], ["scared dog", 9]],
+    bored: [["bored dog", 12], ["dog yawning", 6]],
+    mocking: [["dog grin", 5], ["dog smiling", 12]],
+    stop: [["dog high five", 8]],
+    determined: [["serious dog", 12]],
+    focused: [["serious dog", 12], ["dog staring", 12]],
+  },
 };
 
-export function queryForMood(moodTag, animal = "cat") {
-  const template = MOOD_QUERY_TEMPLATES[moodTag];
-  if (!template) return `${moodTag.replace(/_/g, " ")} ${animal}`;
-  return template.replace("{animal}", animal);
+// Phrases for a mood, with a plain fallback for any mood not in the table.
+export function queriesForMood(moodTag, animal = "cat") {
+  const table = MOOD_QUERIES[animal === "dog" ? "dog" : "cat"];
+  return table[moodTag] || [[`${moodTag.replace(/_/g, " ")} ${animal}`, 8]];
 }
 
 // One Giphy result -> entry, or null if it has no usable image. The URL is
@@ -94,7 +126,7 @@ export class ReactionSource {
 
   _reset() {
     this.moodQueues = {};          // mood -> entries in Giphy's order
-    this.moodOffsets = {};         // mood -> next Giphy offset
+    this.phraseIndex = {};         // mood -> which of its phrases to search next
     this.generalPool = [];         // keyless photos
     this.failedAt = {};
     this.inflight = new Set();
@@ -155,12 +187,14 @@ export class ReactionSource {
     try {
       await this._loadConfig();
       if (!this.giphyKey) return;
-      const offset = this.moodOffsets[mood] || 0;
+      const phrases = queriesForMood(mood, this.animal);
+      const index = (this.phraseIndex[mood] || 0) % phrases.length;
+      const [query, depth] = phrases[index];
       const url = new URL(GIPHY_SEARCH_URL);
       url.searchParams.set("api_key", this.giphyKey);
-      url.searchParams.set("q", queryForMood(mood, this.animal));
-      url.searchParams.set("limit", String(BATCH_SIZE));
-      url.searchParams.set("offset", String(offset));
+      url.searchParams.set("q", query);
+      url.searchParams.set("limit", String(depth));
+      url.searchParams.set("offset", "0");
       url.searchParams.set("rating", "g");
       url.searchParams.set("lang", "en");
       const res = await this.fetch(url.toString());
@@ -174,8 +208,8 @@ export class ReactionSource {
       const payload = await res.json();
       const data = Array.isArray(payload.data) ? payload.data : [];
       const entries = data.map((it) => giphyEntry(it, mood, this.animal)).filter(Boolean);
-      // Past the end of the results, start over from the top next time.
-      this.moodOffsets[mood] = data.length < BATCH_SIZE ? 0 : offset + data.length;
+      // Next time, the next phrase. After the last one, back to the first.
+      this.phraseIndex[mood] = index + 1;
       if (entries.length) {
         this.giphyAvailable = true;
         this.moodQueues[mood] = [...(this.moodQueues[mood] || []), ...entries];
