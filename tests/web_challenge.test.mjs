@@ -5,10 +5,10 @@ import assert from "node:assert/strict";
 import {
   dailyPrompts, dailyNumber, parsePromptList, isDateString, previousDate, RoundTimer,
   scoreRun, compareResults, shareText, recordResult, currentStreak, bestRoundIndex, normalizeStore,
-  roundSignal, faceOnlyVector, FACE_PROMPTS, GESTURE_PROMPTS, ROUND_LIMIT_MS, LAUNCH_DATE, PROMPTS,
+  roundSignal, faceOnlyVector, localDateString, utcDateString, FACE_PROMPTS, GESTURE_PROMPTS, ROUND_LIMIT_MS, LAUNCH_DATE, PROMPTS,
 } from "../web/challenge.js";
 import { combine, topTags } from "../web/mood.js";
-import { tagsFromGestures } from "../web/face.js";
+import { tagsFromGestures, GESTURE_MOOD } from "../web/face.js";
 
 const dates = (start, n) => Array.from({ length: n }, (_, i) =>
   new Date(Date.parse(`${start}T00:00:00Z`) + i * 86400000).toISOString().slice(0, 10));
@@ -243,6 +243,47 @@ test("damaged saved data is ignored", () => {
   assert.deepEqual(normalizeStore("nope"), normalizeStore(null));
   const s = normalizeStore({ official: { date: "yesterday" }, best: { passes: "5" }, streak: { count: -2, lastDate: "x" } });
   assert.deepEqual(s, { official: null, best: null, streak: { count: 0, lastDate: null } });
+});
+
+test("a damaged official result is ignored", () => {
+  const good = { date: "2026-10-05", number: 2, passes: 3, total: 5, totalMs: 20000 };
+  assert.deepEqual(normalizeStore({ official: good }).official, good);
+  for (const bad of [{ passes: "3" }, { total: null }, { totalMs: "20000" }, { passes: undefined }]) {
+    assert.equal(normalizeStore({ official: { ...good, ...bad } }).official, null, JSON.stringify(bad));
+  }
+  const { total, ...noTotal } = good;
+  assert.equal(normalizeStore({ official: noTotal }).official, null, "missing total");
+  const { store, official } = recordResult({ official: { ...good, passes: "3" } }, good);
+  assert.equal(official, true, "a damaged official result does not block today's run");
+  assert.equal(store.official.passes, 3);
+});
+
+test("the day is the player's local date", () => {
+  const savedTz = process.env.TZ;
+  process.env.TZ = "Etc/GMT-10"; // UTC+10, no daylight saving
+  try {
+    const first = new Date(Date.parse("2026-10-04T14:30:00Z"));  // 00:30 on Oct 5 locally
+    const second = new Date(Date.parse("2026-10-06T13:30:00Z")); // 23:30 on Oct 6 locally
+    assert.equal(localDateString(first), "2026-10-05");
+    assert.equal(localDateString(second), "2026-10-06");
+    assert.equal(utcDateString(first), "2026-10-04");
+    assert.equal(utcDateString(second), "2026-10-06", "the UTC dates skip Oct 5");
+    const r = (d) => ({ date: localDateString(d), number: dailyNumber(localDateString(d)), passes: 3, total: 5, totalMs: 20000 });
+    let { store } = recordResult(null, r(first));
+    ({ store } = recordResult(store, r(second)));
+    assert.equal(store.streak.count, 2, "consecutive local days keep the streak");
+    assert.equal(currentStreak(store, localDateString(second)), 2);
+    assert.equal(dailyNumber(localDateString(first)), 2);
+  } finally {
+    if (savedTz === undefined) delete process.env.TZ;
+    else process.env.TZ = savedTz;
+  }
+});
+
+test("a hand shape's mood is its top-weighted tag", () => {
+  assert.deepEqual(GESTURE_MOOD, {
+    thumbs_up: "approval", thumbs_down: "disapproval", open_palm: "stop", fist: "angry", peace: "chill", pointing: "suspicious",
+  });
 });
 
 test("best round for the share image prefers fast passes with a usable image", () => {

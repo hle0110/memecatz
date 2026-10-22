@@ -1,8 +1,9 @@
-// Daily challenge: five prompts that are the same for everyone on a given UTC
-// date. Everything here is pure (no page, no clock, no storage) so it can be
+// Daily challenge: five prompts that are the same for everyone on a given
+// calendar date, the player's local one. Everything here is pure (no page, no clock, no storage) so it can be
 // tested in Node. web/app.js drives it with the live signals and the real time.
 
 import { combine } from "./mood.js";
+import { GESTURE_MOOD } from "./face.js";
 
 // Day #1 is the day the challenge first went live.
 export const LAUNCH_DATE = "2026-10-04";
@@ -18,10 +19,6 @@ export const FACE_PROMPTS = ["happy", "surprise", "angry", "sad", "neutral"];
 export const GESTURE_PROMPTS = ["approval", "chill", "stop", "suspicious"];
 // Gesture rounds check the classified hand shape itself, not the mood.
 export const GESTURE_FOR_PROMPT = { approval: "thumbs_up", chill: "peace", stop: "open_palm", suspicious: "pointing" };
-// What a shown hand shape means, for "you looked ... instead".
-export const GESTURE_MOOD = {
-  thumbs_up: "approval", thumbs_down: "disapproval", peace: "chill", open_palm: "stop", pointing: "suspicious", fist: "angry",
-};
 export const FACE_COUNT = 3;
 export const GESTURE_COUNT = 2;
 
@@ -42,6 +39,12 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export function utcDateString(date) {
   return date.toISOString().slice(0, 10);
+}
+
+// The player's own calendar date, so the day turns over at their midnight.
+export function localDateString(date) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
 export function isDateString(text) {
@@ -251,11 +254,17 @@ export function emptyStore() {
   return { official: null, best: null, streak: { count: 0, lastDate: null } };
 }
 
+function isResult(r) {
+  return !!r && typeof r.passes === "number" && typeof r.totalMs === "number";
+}
+
 export function normalizeStore(raw) {
   const store = emptyStore();
   if (!raw || typeof raw !== "object") return store;
-  if (raw.official && isDateString(raw.official.date)) store.official = raw.official;
-  if (raw.best && typeof raw.best.passes === "number" && typeof raw.best.totalMs === "number") store.best = raw.best;
+  if (raw.official && isDateString(raw.official.date) && isResult(raw.official) && typeof raw.official.total === "number") {
+    store.official = raw.official;
+  }
+  if (isResult(raw.best)) store.best = raw.best;
   if (raw.streak && Number.isInteger(raw.streak.count) && raw.streak.count >= 0 &&
       (raw.streak.lastDate === null || isDateString(raw.streak.lastDate))) {
     store.streak = { count: raw.streak.count, lastDate: raw.streak.lastDate };

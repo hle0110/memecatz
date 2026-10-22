@@ -18,12 +18,29 @@ A real webcam with a real face, real phones, Safari, Windows, and Intel Macs. Ev
 
 ## Known limits
 
-1. **Thin moods.** Giphy has few real, on-mood results for some moods, so these repeat sooner: stop (about 10 cat, 8 dog), cat approval (3 plus "cat smiling"), cat triumph (3 plus "cat smiling"), dog sad (8), dog suspicious (2 plus "dog side eye"), dog annoyed (10).
-2. **Giphy results drift.** The phrase table was checked by eye in October 2026. Re-run `dev/giphy_audit.py` every few months.
-3. **Giphy beta key** allows 100 calls an hour for everyone. A public launch needs the production key (apply on the Giphy developer dashboard; it has a fee).
-4. **Cat photo snapshots.** The Cat API's image host sends no CORS header, so a snapshot with a backup cat photo saves the caption and a note instead of the photo. Giphy and Dog CEO images work.
-5. **MediaPipe telemetry** tries to reach a Google logging host; the security policy blocks it, which leaves one console error per visit. Harmless, and better for privacy.
-6. **Emotion model license.** The 7-class model (mini_XCEPTION from the MIT `fer` package) was trained on FER2013. Check that dataset's terms before any commercial use.
+### Thin moods
+
+Giphy has few real, on-mood results for some moods, so these repeat sooner: stop (about 10 cat, 8 dog), cat approval (3 plus "cat smiling"), cat triumph (3 plus "cat smiling"), dog sad (8), dog suspicious (2 plus "dog side eye"), dog annoyed (10).
+
+### Giphy results drift
+
+The phrase table was checked by eye in October 2026. Re-run `dev/giphy_audit.py` every few months.
+
+### Giphy beta key
+
+The beta key allows 100 calls an hour for everyone. A public launch needs the production key (apply on the Giphy developer dashboard; it has a fee).
+
+### Cat photo snapshots
+
+The Cat API's image host sends no CORS header, so a snapshot with a backup cat photo saves the caption and a note instead of the photo. Giphy and Dog CEO images work.
+
+### MediaPipe telemetry
+
+MediaPipe tries to reach a Google logging host; the security policy blocks it, which leaves one console error per visit. Harmless, and better for privacy.
+
+### Emotion model license
+
+The 7-class model (mini_XCEPTION from the MIT `fer` package) was trained on FER2013. Check that dataset's terms before any commercial use.
 
 ## History (what was fixed and why)
 

@@ -213,6 +213,11 @@ export const GESTURE_TO_TAGS = {
   pointing: { suspicious: 0.6, focused: 0.5 },
 };
 
+// What a shown hand shape means on its own: its top-weighted tag. Used for
+// "you looked ... instead" in the daily challenge.
+export const GESTURE_MOOD = Object.fromEntries(Object.entries(GESTURE_TO_TAGS).map(([g, tags]) =>
+  [g, Object.entries(tags).reduce((a, b) => (b[1] > a[1] ? b : a))[0]]));
+
 const WRIST = 0;
 const THUMB_MCP = 2;
 const THUMB_TIP = 4;
