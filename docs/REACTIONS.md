@@ -1,6 +1,6 @@
 # Reactions
 
-The whole point of the app is that the reaction is a real cat or dog that clearly shows your mood. This file explains how reactions are chosen, the rules that limit how, and how to keep the phrase table accurate.
+Every reaction is a real cat or dog that clearly shows your mood: never generated, drawn, cartoon or 3D, and never people. This file explains how reactions are chosen, the rules that limit how, and how to keep the phrase table accurate.
 
 ## Giphy's rules
 

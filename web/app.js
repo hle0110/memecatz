@@ -12,7 +12,7 @@ import { captionFor } from "./captions.js";
 import { EmotionDetector } from "./emotion.js";
 import {
   PROMPTS, ROUND_LIMIT_MS, RoundTimer, dailyPrompts, dailyNumber, parsePromptList, isDateString,
-  utcDateString, scoreRun, formatSeconds, shareText, recordResult, currentStreak, isOfficialDone,
+  localDateString, scoreRun, formatSeconds, shareText, recordResult, currentStreak, isOfficialDone,
   normalizeStore, bestRoundIndex, faceOnlyVector, roundSignal,
 } from "./challenge.js";
 
@@ -411,17 +411,21 @@ function processFrame(nowMs) {
       setStatus("can't see your face. face the camera with good light.");
       setMoodText("");
     }
-    challengeTick(null, [], false);
-    return;
-  }
-
-  if (calibrator.calibrating) {
+  } else if (calibrator.calibrating) {
     setStatus(`hold a relaxed face while it calibrates... ${Math.round(calibrator.progress(nowMs) * 100)}%`);
-    challengeTick(null, [], false);
-    return;
   }
-  if (!strengths) { challengeTick(null, [], false); return; }
 
+  const faceVisible = faceFound && !calibrator.calibrating && !!strengths;
+  const mood = faceVisible ? updateMood(dt, auTags, neutral) : null;
+  const playing = !!challenge;
+  challengeTick(mood ? mood.faceRanked : null, faceVisible ? lastGestures : [], faceVisible);
+  if (!mood) return;
+  if (!playing && mode === "free") updateReaction(mood.ranked.map(([t]) => t), now);
+  renderDebug({ deltas, auTags, gestureTags: lastGestureTags, vector: mood.vector, ranked: mood.ranked, neutral, fer: lastFerScores, fps: fpsValue });
+}
+
+// Mixes this frame's signals into the smoothed moods and shows the result.
+function updateMood(dt, auTags, neutral) {
   // The emotion model's 7 scores fill the same slot they fill on desktop.
   // Without the model, a synthetic neutral keeps the vector honest.
   const ferScores = lastFerScores ? lastFerScores : { neutral };
@@ -430,14 +434,11 @@ function processFrame(nowMs) {
   smoothed = smoothMoodVector(smoothed, vector, alpha);
   const ranked = topTags(smoothed, MOOD_TOP_LIMIT, MOOD_FLOOR);
   smoothedFace = smoothMoodVector(smoothedFace, faceOnlyVector(ferScores, auTags), alpha);
-  const tags = ranked.map(([t]) => t);
 
   setMoodText(friendlyMood(ranked));
   const emotionNote = emotion.ready ? "  |  emotion model on" : emotion.failed ? "" : "  |  emotion model loading";
   setStatus(reactions.describeSource() + emotionNote);
-  if (challenge) challengeTick(topTags(smoothedFace, MOOD_TOP_LIMIT, MOOD_FLOOR), lastGestures, true);
-  else if (mode === "free") updateReaction(tags, now);
-  renderDebug({ deltas, auTags, gestureTags: lastGestureTags, vector, ranked, neutral, fer: lastFerScores, fps: fpsValue });
+  return { vector, ranked, faceRanked: topTags(smoothedFace, MOOD_TOP_LIMIT, MOOD_FLOOR) };
 }
 
 // Runs once per new camera frame. requestVideoFrameCallback is used where the
@@ -553,14 +554,20 @@ function drawCover(ctx, source, sw, sh, dx, dy, dw, dh, mirror = false) {
   ctx.restore();
 }
 
+// Sets ctx.font at the largest size from `size` down to `minSize`, in `step`
+// px steps, that fits `text` in maxWidth. Returns that size.
+function fitFont(ctx, text, weight, size, minSize, step, maxWidth) {
+  ctx.font = `${weight} ${size}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
+  while (ctx.measureText(text).width > maxWidth && size > minSize) {
+    size -= step;
+    ctx.font = `${weight} ${size}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
+  }
+  return size;
+}
+
 function drawCaptionLine(ctx, text, cx, y, maxWidth, baseline) {
   if (!text) return;
-  let size = 44;
-  ctx.font = `800 ${size}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
-  while (ctx.measureText(text).width > maxWidth && size > 18) {
-    size -= 2;
-    ctx.font = `800 ${size}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
-  }
+  const size = fitFont(ctx, text, 800, 44, 18, 2, maxWidth);
   ctx.textAlign = "center";
   ctx.textBaseline = baseline;
   ctx.lineJoin = "round";
@@ -661,7 +668,7 @@ function setText(node, text) {
 }
 
 function challengeDate() {
-  return DATE_OVERRIDE || utcDateString(new Date());
+  return DATE_OVERRIDE || localDateString(new Date());
 }
 
 // Browser storage can be missing or blocked (private windows, strict
@@ -717,6 +724,9 @@ function showOverlay({ round = "", big = "", hint = "", counting = false, bars =
   chOverlay.dataset.phase = phase;
   chOverlay.dataset.prompt = prompt;
   setText(chRound, round);
+  // Screen readers hear the prompt and the result, not every countdown digit.
+  const live = phase === "round" || phase === "result" ? "polite" : "off";
+  if (chBig.getAttribute("aria-live") !== live) chBig.setAttribute("aria-live", live);
   setText(chBig, big);
   setText(chHint, hint);
   chBars.classList.toggle("hidden", !bars);
@@ -869,7 +879,8 @@ function challengeTick(faceRanked, gestures, faceVisible) {
     showOverlay({
       round: roundLabel(c),
       big: info.text,
-      hint: c.timer.paused ? "paused, can't see your face" : info.hint,
+      hint: calibrator.calibrating ? "recalibrating, hold a relaxed face"
+        : c.timer.paused ? "paused, can't see your face" : info.hint,
       bars: true,
       phase: "round",
       prompt,
@@ -971,11 +982,7 @@ function loadCorsImage(url) {
 }
 
 function drawText(ctx, text, x, y, size, color, weight = 700, align = "center", maxWidth = Infinity) {
-  ctx.font = `${weight} ${size}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
-  while (ctx.measureText(text).width > maxWidth && size > 12) {
-    size -= 1;
-    ctx.font = `${weight} ${size}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
-  }
+  fitFont(ctx, text, weight, size, 12, 1, maxWidth);
   ctx.fillStyle = color;
   ctx.textAlign = align;
   ctx.textBaseline = "middle";
