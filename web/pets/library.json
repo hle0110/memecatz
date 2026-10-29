@@ -1,0 +1,12 @@
+{
+  "cat": {
+    "stop": [],
+    "approval": []
+  },
+  "dog": {
+    "stop": [],
+    "approval": [],
+    "sad": [],
+    "suspicious": []
+  }
+}

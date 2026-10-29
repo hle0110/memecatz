@@ -66,7 +66,7 @@ The 7-class model (mini_XCEPTION from the MIT `fer` package) was trained on FER2
 | Clip recording | MediaRecorder on a composite canvas; same CORS limits as snapshots. |
 | Session gallery | Best reactions of this visit, kept in the page only. |
 | Opt-in accuracy feedback | "Right mood?" thumbs, storing only the mood vector and answer (Workers KV or D1). Needs a privacy note. |
-| Own curated library | Real, licensed, mood-tagged photos or clips served from the site, for exact matching with no rate limit. |
+| Own curated library | Started: the pet library (`docs/PET_LIBRARY.md`) is built and empty. Next: record clips for stop, approval, dog sad and dog suspicious. |
 | Cookieless analytics | Cloudflare Web Analytics. |
 | Social preview image | `og:image` once the final domain is known. |
 | Smarter backup photos | Pexels search (free, 200 requests an hour, 20,000 a month, attribution required) instead of random Cat API photos, only while Giphy is rate limited. |

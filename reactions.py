@@ -1,5 +1,6 @@
 """
-Everything about getting a real reaction on screen: real cat or dog content
+Everything about getting a real reaction on screen: the own-pet library
+(clips of the owner's pets, shared with the web app), real cat or dog content
 from Giphy (mood matched, animated) and a zero-setup real photo backup (The Cat
 API / Dog CEO API), picking one for the current mood, and rendering the caption
 onto it. No generated, drawn, or fake imagery is ever used as a substitute.
@@ -14,6 +15,7 @@ import os
 import glob
 import json
 import random
+import re
 import shutil
 import time
 import hashlib
@@ -116,8 +118,136 @@ def queries_for_mood(mood_tag, animal="cat"):
     return table.get(mood_tag) or [(f"{mood_tag.replace('_', ' ')} {animal}", 8)]
 
 
+# The own-pet library, shared with the web app: web/pets/library.json, with
+# the clip files next to it, the same file web/reactions.js reads. See
+# docs/PET_LIBRARY.md.
+PET_LIBRARY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "pets")
+PET_LIBRARY_PATH = os.path.join(PET_LIBRARY_DIR, "library.json")
+PET_TYPES = ("webp", "mp4")
+PET_PERMISSIONS = ("owner", "with permission")
+PET_MAX_VIDEO_FRAMES = 600
+_PET_FILE_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]*")
+# Only ASCII spaces, tabs and line breaks, so it matches the web's trimCredit.
+_CREDIT_SPACE = " \t\r\n"
+
+
+def is_library_item(item):
+    """A plain relative path inside web/pets/ that ends in the item's type."""
+    if not isinstance(item, dict):
+        return False
+    file, kind = item.get("file"), item.get("type")
+    credit, permission = item.get("credit"), item.get("permission")
+    if not isinstance(kind, str) or kind not in PET_TYPES:
+        return False
+    if not isinstance(permission, str) or permission not in PET_PERMISSIONS:
+        return False
+    if not isinstance(credit, str) or not credit.strip(_CREDIT_SPACE):
+        return False
+    if not isinstance(file, str) or not _PET_FILE_RE.fullmatch(file):
+        return False
+    if any(part in ("", ".", "..") for part in file.split("/")):
+        return False
+    return file.lower().endswith("." + kind)
+
+
+def library_entries(library, mood, animal="cat"):
+    """The usable library items for a mood, in file order. A malformed item is
+    left out. An empty list means the mood uses Giphy."""
+    table = library.get("dog" if animal == "dog" else "cat") if isinstance(library, dict) else None
+    items = table.get(mood) if isinstance(table, dict) else None
+    if not isinstance(items, list):
+        return []
+    return [
+        {"key": f"pet:{it['file']}", "file": it["file"], "type": it["type"],
+         "credit": it["credit"].strip(_CREDIT_SPACE), "permission": it["permission"]}
+        for it in items if is_library_item(it)
+    ]
+
+
+def next_library_item(entries, cursor, exclude_key=None):
+    """The library items take turns. Returns (item, next_cursor), skipping
+    exclude_key when another item exists, or (None, cursor) for no items."""
+    n = len(entries)
+    if not n:
+        return None, cursor
+    for i in range(n):
+        idx = (cursor + i) % n
+        if entries[idx]["key"] != exclude_key:
+            return entries[idx], idx + 1
+    idx = cursor % n
+    return entries[idx], idx + 1
+
+
+def pet_credit_line(credit):
+    """The credit shown under a library item, the same text on the web."""
+    return f"Pet clip: {credit}"
+
+
+def load_pet_library(path=PET_LIBRARY_PATH):
+    """The library file as a dict, or None if it is missing or damaged."""
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as error:
+        print(f"pet library not loaded: {error}")
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _thin_frames(frames, durations, max_frames):
+    """Thins evenly to max_frames, adding the dropped frames' time to the kept
+    ones so playback speed stays the same."""
+    if len(frames) <= max_frames:
+        return frames, durations
+    step = len(frames) / float(max_frames)
+    kept_frames, kept_durations = [], []
+    for i in range(max_frames):
+        lo, hi = int(i * step), int((i + 1) * step)
+        kept_frames.append(frames[lo])
+        kept_durations.append(sum(durations[lo:hi]))
+    return kept_frames, kept_durations
+
+
+def decode_video(path, max_frames=GIPHY_MAX_FRAMES):
+    """An mp4 file -> (BGR frames, frame durations in seconds), or (None, None)."""
+    capture = cv2.VideoCapture(path)
+    try:
+        if not capture.isOpened():
+            return None, None
+        fps = capture.get(cv2.CAP_PROP_FPS)
+        seconds = 1.0 / fps if fps and fps > 0 else GIF_DEFAULT_FRAME_SECONDS
+        frames = []
+        while len(frames) < PET_MAX_VIDEO_FRAMES:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            frames.append(frame)
+    finally:
+        capture.release()
+    if not frames:
+        return None, None
+    return _thin_frames(frames, [seconds] * len(frames), max_frames)
+
+
+def load_pet_media(item):
+    """Reads one library file. Returns (frames, durations) or (None, None)."""
+    path = os.path.join(PET_LIBRARY_DIR, *item["file"].split("/"))
+    try:
+        if os.path.getsize(path) > GIPHY_MAX_BYTES:
+            return None, None
+        if item["type"] == "mp4":
+            return decode_video(path)
+        with open(path, "rb") as handle:
+            return decode_animation(handle.read())
+    except (OSError, ValueError):
+        return None, None
+
+
 def decode_animation(data, max_frames=GIPHY_MAX_FRAMES):
-    """GIF bytes -> (list of BGR frames, list of frame durations in seconds).
+    """GIF or animated WebP bytes -> (list of BGR frames, list of frame
+    durations in seconds).
 
     Long animations are thinned evenly to max_frames, with the dropped frames'
     time added to the kept ones so playback speed stays the same.
@@ -134,15 +264,7 @@ def decode_animation(data, max_frames=GIPHY_MAX_FRAMES):
 
     if not frames:
         return None, None
-    if len(frames) > max_frames:
-        step = len(frames) / float(max_frames)
-        kept_frames, kept_durations = [], []
-        for i in range(max_frames):
-            lo, hi = int(i * step), int((i + 1) * step)
-            kept_frames.append(frames[lo])
-            kept_durations.append(sum(durations[lo:hi]))
-        frames, durations = kept_frames, kept_durations
-    return frames, durations
+    return _thin_frames(frames, durations, max_frames)
 
 
 class AnimalReactionDataset:
@@ -472,20 +594,46 @@ class ReactionSource:
         self.dataset = AnimalReactionDataset(cache_dir, animal=animal, giphy_api_key=giphy_api_key, cat_api_key=cat_api_key)
         if force_refresh:
             self.dataset.clear_cache()
+        self.animal = "dog" if animal == "dog" else "cat"
+        self.pet_library = load_pet_library()
+        self._pet_cursor = {}
+
+    def _take_pet(self, mood, exclude_key):
+        """The next library item for the mood that loads, or None (use Giphy)."""
+        entries = library_entries(self.pet_library, mood, self.animal)
+        for _ in range(len(entries)):
+            item, self._pet_cursor[mood] = next_library_item(entries, self._pet_cursor.get(mood, 0), exclude_key)
+            frames, durations = load_pet_media(item)
+            if frames:
+                return {
+                    "key": item["key"],
+                    "name": f"{mood} {self.animal} reaction",
+                    "image": frames[0],
+                    "frames": frames if len(frames) > 1 else None,
+                    "durations": durations if len(frames) > 1 else None,
+                    "source": "pet_library",
+                    "attribution": pet_credit_line(item["credit"]),
+                    "tags": [mood],
+                }
+        return None
 
     def describe_source(self):
         return self.dataset.describe_source()
 
     def pick(self, mood_tags, exclude_key=None):
         """
-        A reaction for the strongest mood that has one: Giphy first, walking
-        down the ranked moods, then a backup photo. Returns a dict with "image"
+        A reaction for the strongest mood that has one, walking down the
+        ranked moods: the pet library for that mood first, else Giphy. Then a
+        backup photo. Returns a dict with "image"
         (first frame) and, for animations, "frames" and "durations".
         """
         moods = list(mood_tags) if mood_tags else ["neutral"]
         primary_mood = moods[0]
 
         for mood in moods:
+            pet = self._take_pet(mood, exclude_key)
+            if pet:
+                return pet
             for _ in range(3):  # skip a GIF that fails to download or decode
                 entry = self.dataset.take_for_mood(mood, exclude_key=exclude_key)
                 if entry is None:

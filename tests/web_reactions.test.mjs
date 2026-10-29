@@ -2,7 +2,8 @@
 // Exercises web/reactions.js with a fake fetch, no network needed.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ReactionSource, DOG_BREEDS, MOOD_QUERIES } from "../web/reactions.js";
+import { readFileSync, statSync } from "node:fs";
+import { ReactionSource, DOG_BREEDS, MOOD_QUERIES, isLibraryItem, libraryEntries, nextLibraryItem } from "../web/reactions.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 const ids = ["a", "b", "c", "d", "e", "f", "g", "h"];
@@ -127,4 +128,63 @@ test("dog mode uses the dog phrases", async () => {
   for (let i = 0; i < 5; i++) await tick();
   const search = new URL(f.calls.find((u) => u.startsWith("https://api.giphy.com/")));
   assert.equal(search.searchParams.get("q"), MOOD_QUERIES.dog.confused[0][0]);
+});
+
+const clip = (file, extra = {}) => ({ file, type: file.endsWith(".mp4") ? "mp4" : "webp", credit: "Mochi, filmed by the owner", permission: "owner", ...extra });
+
+test("pet library items come first for their mood, take turns, and skip Giphy", async () => {
+  const f = fakeFetch();
+  const rs = new ReactionSource("dog", f.fn);
+  rs.setLibrary({ dog: { stop: [clip("dog/stop-1.webp"), clip("dog/stop-2.mp4", { permission: "with permission" })] } });
+  const picks = [rs.pick(["stop"]), rs.pick(["stop"]), rs.pick(["stop"])];
+  assert.deepEqual(picks.map((p) => p.key), ["pet:dog/stop-1.webp", "pet:dog/stop-2.mp4", "pet:dog/stop-1.webp"]);
+  assert.equal(picks[0].url, "/pets/dog/stop-1.webp");
+  assert.equal(picks[1].type, "mp4");
+  assert.equal(picks[0].attribution, "Pet clip: Mochi, filmed by the owner");
+  assert.equal(picks[0].source, "pet_library");
+  for (let i = 0; i < 5; i++) await tick();
+  assert.ok(!f.calls.some((u) => u.startsWith("https://api.giphy.com/")), "a mood with library items never searches Giphy");
+  assert.equal(rs.pick(["stop"], "pet:dog/stop-2.mp4").key, "pet:dog/stop-1.webp", "skips the one on screen");
+});
+
+test("a mood without library items falls back to Giphy as before", async () => {
+  const f = fakeFetch();
+  const rs = new ReactionSource("dog", f.fn);
+  rs.setLibrary({ dog: { stop: [], sad: [clip("../secret.webp"), { file: "dog/x.webp", type: "webp", credit: " ", permission: "owner" }] } });
+  rs.warm(["stop", "sad"]);
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(rs.pick(["stop"]).key, "giphy:a");
+  assert.equal(rs.pick(["sad"]).key, "giphy:a", "only broken items is the same as none");
+  const queries = f.calls.filter((u) => u.startsWith("https://api.giphy.com/")).map((u) => new URL(u).searchParams.get("q"));
+  assert.deepEqual(queries.sort(), ["dog high five", "sad dog"]);
+});
+
+test("library items must be well formed", () => {
+  assert.ok(isLibraryItem(clip("cat/approval.webp")));
+  assert.ok(isLibraryItem(clip("approval.mp4")));
+  for (const bad of [
+    clip("cat/a.webp", { type: "gif" }), clip("cat/a.mp4", { type: "webp" }), clip("cat/a.webp", { permission: "found online" }),
+    clip("cat/a.webp", { credit: "" }), clip("cat/a.webp", { credit: 5 }), clip("/etc/a.webp"), clip("cat/../a.webp"),
+    clip("cat//a.webp"), clip("https://example.com/a.webp"), clip("cat/a b.webp"), null, [], "cat/a.webp",
+  ]) assert.equal(isLibraryItem(bad), false, JSON.stringify(bad));
+  assert.deepEqual(libraryEntries({ cat: { happy: [clip("h.webp", { credit: "  Mochi \n" })] } }, "happy", "cat")[0].credit, "Mochi");
+  assert.deepEqual(libraryEntries(null, "happy"), []);
+  assert.deepEqual(libraryEntries({ cat: [] }, "happy"), []);
+  assert.deepEqual(nextLibraryItem([], 3), [null, 3]);
+});
+
+test("the checked-in library parses, and every item is valid, present and under 500 KB", () => {
+  const lib = JSON.parse(readFileSync(new URL("../web/pets/library.json", import.meta.url), "utf8"));
+  assert.deepEqual(Object.keys(lib.cat).sort(), ["approval", "stop"]);
+  assert.deepEqual(Object.keys(lib.dog).sort(), ["approval", "sad", "stop", "suspicious"]);
+  for (const animal of ["cat", "dog"]) {
+    for (const [mood, items] of Object.entries(lib[animal])) {
+      assert.ok(Array.isArray(items), `${animal} ${mood}`);
+      for (const item of items) {
+        assert.ok(isLibraryItem(item), `${animal} ${mood}: ${JSON.stringify(item)} is malformed`);
+        const size = statSync(new URL(`../web/pets/${item.file}`, import.meta.url)).size;
+        assert.ok(size < 500 * 1024, `${item.file} is ${Math.round(size / 1024)} KB, keep it under 500 KB`);
+      }
+    }
+  }
 });

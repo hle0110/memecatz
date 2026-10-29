@@ -86,6 +86,10 @@ Each run makes one API call per distinct phrase (about 30 for cat, 35 for dog). 
 
 To test a new phrase before adding it, add it to the table temporarily with a generous depth and audit just that mood with `--moods`.
 
+## Own pet clips
+
+Moods with few good Giphy results can be filled with clips of your own pets instead. A mood with library items never searches Giphy, so these rules are unaffected. See `docs/PET_LIBRARY.md`.
+
 ## Backup photos
 
 Used only while Giphy is not configured, rejects the key, or is failing (for example rate limited). Cats come from The Cat API (`/v1/images/search`, random, not mood matched). Dogs come from Dog CEO's per-breed endpoint over 26 pet breeds in `DOG_BREEDS` (same list in both apps), because its any-breed endpoint returns wild canids too.

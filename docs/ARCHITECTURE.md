@@ -20,6 +20,7 @@ top moods ─> reaction (Giphy phrase table, else backup photo) + caption ─> s
 | `mood.py` | `web/mood.js` | Combines signals into a mood vector; bit-identical |
 | `reactions.py` | `web/reactions.js` | Giphy phrase table, backup photos, caption rendering (desktop) |
 | `captions.py` | `web/captions.js` | Static caption bank (22 moods, 6 each), identical; desktop also has optional live captions |
+| `reactions.py` reads it | `web/pets/library.json` | Own-pet clips per mood, one file read by both apps (`docs/PET_LIBRARY.md`) |
 | | `web/challenge.js` | Daily challenge rules: prompts per date, round timer, scoring, saved results, share text (web only) |
 | `identity.py` | | Optional saved calibration profiles (`--save-profile`, needs face_recognition) |
 | `run.py`, `run.sh`, `run.bat` | | Launcher: private `.venv`, installs requirements, repairs a broken venv |
@@ -57,7 +58,7 @@ MediaPipe HandLandmarker (`hand_landmarker/float16/1`), every 100 ms on web, eve
 
 ## Reactions
 
-Giphy first, mood matched, using the phrase table in `docs/REACTIONS.md`. Backup when Giphy is not configured, rejected the key, or is failing: The Cat API (random cats) or Dog CEO (random photos from a list of 26 pet breeds, since its any-breed endpoint includes wild dogs). Never both at once while Giphy works. Web shows Giphy's animated WebP in an `<img>`; desktop downloads the GIF into memory, decodes up to 48 frames, and plays it with the caption drawn on each frame. Giphy content always carries "Powered By GIPHY".
+The own-pet library first: a mood with valid items in `web/pets/library.json` shows those, in turn, with a "Pet clip: ..." credit line, and never searches Giphy (`docs/PET_LIBRARY.md`). The web plays WebP items in the reaction `<img>` and mp4 items in a muted, looping `<video>`; the desktop decodes them from disk like a GIF. Every other mood: Giphy, mood matched, using the phrase table in `docs/REACTIONS.md`. Backup when Giphy is not configured, rejected the key, or is failing: The Cat API (random cats) or Dog CEO (random photos from a list of 26 pet breeds, since its any-breed endpoint includes wild dogs). Never both at once while Giphy works. Web shows Giphy's animated WebP in an `<img>`; desktop downloads the GIF into memory, decodes up to 48 frames, and plays it with the caption drawn on each frame. Giphy content always carries "Powered By GIPHY".
 
 ## Web specifics
 
