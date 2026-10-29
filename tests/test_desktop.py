@@ -233,12 +233,19 @@ def test_pet_library_comes_first_then_giphy():
     assert missing["source"] == "unavailable"
 
 
-def test_checked_in_pet_library_starts_empty():
+def test_checked_in_pet_library_loads():
     import reactions
     library = reactions.load_pet_library()
     assert sorted(library["cat"]) == ["approval", "stop"]
     assert sorted(library["dog"]) == ["approval", "sad", "stop", "suspicious"]
-    assert not any(reactions.library_entries(library, m, a) for a in ("cat", "dog") for m in library[a])
+    for animal in ("cat", "dog"):
+        for mood, items in library[animal].items():
+            entries = reactions.library_entries(library, mood, animal)
+            assert len(entries) == len(items), f"{animal} {mood} has a malformed item"
+            for entry in entries:
+                frames, durations = reactions.load_pet_media(entry)
+                assert frames, f"{entry['file']} does not decode"
+                assert 2.0 <= sum(durations) <= 4.0 or len(frames) == 1, f"{entry['file']} runs {sum(durations):.1f} s"
 
 
 def main():

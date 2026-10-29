@@ -157,8 +157,9 @@ def main():
     boxes = [[rng.randint(-30, 600), rng.randint(-30, 440), rng.randint(20, 300), rng.randint(20, 300)] for _ in range(300)]
     pixels = [[rng.randint(0, 255) for _ in range(3)] for _ in range(2000)]
     library_cases = _random_library_cases(rng)
+    file_walk_cases = [{"animal": a, "steps": PET_MOODS * 2} for a in ("cat", "dog")]
     js = _run_node({"moodCases": mood_cases, "gestureCases": hands, "boxes": boxes, "pixels": pixels,
-                    "libraryCases": library_cases})
+                    "libraryCases": library_cases, "fileWalkCases": file_walk_cases})
     failures = []
 
     def check(name, ok, detail=""):
@@ -239,8 +240,8 @@ def main():
     check(f"pet library lookup and Giphy fallback identical on {len(walks)} random libraries "
           f"({used} library picks, {fallbacks} fallbacks)", bad == 0, f"{bad} differ")
     real = load_pet_library()
-    real_walk = {"library": real, "animal": "dog", "steps": PET_MOODS}
-    check("the checked-in library falls back to Giphy for every mood", _library_walk(real_walk) == ["giphy"] * len(PET_MOODS))
+    file_walks = [_library_walk(dict(c, library=real)) for c in file_walk_cases]
+    check("the checked-in library picks the same clips and fallbacks in both apps", file_walks == js["petFileWalks"])
 
     with open(os.path.join(ROOT, "worker.js")) as handle:
         worker = handle.read()
