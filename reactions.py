@@ -124,15 +124,18 @@ def queries_for_mood(mood_tag, animal="cat"):
 PET_LIBRARY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "pets")
 PET_LIBRARY_PATH = os.path.join(PET_LIBRARY_DIR, "library.json")
 PET_TYPES = ("webp", "mp4")
-PET_PERMISSIONS = ("owner", "with permission")
+PET_PERMISSIONS = ("owner", "with permission", "licensed")
 PET_MAX_VIDEO_FRAMES = 600
 _PET_FILE_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]*")
-# Only ASCII spaces, tabs and line breaks, so it matches the web's trimCredit.
-_CREDIT_SPACE = " \t\r\n"
+# A licensed item's page: the same characters web/reactions.js allows.
+_PET_SOURCE_RE = re.compile(r"https://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+")
+# Only ASCII spaces, tabs and line breaks, so it matches the web's trimText.
+_TRIM_SPACE = " \t\r\n"
 
 
 def is_library_item(item):
-    """A plain relative path inside web/pets/ that ends in the item's type."""
+    """A plain relative path inside web/pets/ that ends in the item's type,
+    plus source and license for a licensed item."""
     if not isinstance(item, dict):
         return False
     file, kind = item.get("file"), item.get("type")
@@ -141,8 +144,15 @@ def is_library_item(item):
         return False
     if not isinstance(permission, str) or permission not in PET_PERMISSIONS:
         return False
-    if not isinstance(credit, str) or not credit.strip(_CREDIT_SPACE):
+    if not isinstance(credit, str) or not credit.strip(_TRIM_SPACE):
         return False
+    if permission == "licensed":
+        # A licensed clip names the page it came from and its license.
+        source, license_name = item.get("source"), item.get("license")
+        if not isinstance(source, str) or not _PET_SOURCE_RE.fullmatch(source):
+            return False
+        if not isinstance(license_name, str) or not license_name.strip(_TRIM_SPACE):
+            return False
     if not isinstance(file, str) or not _PET_FILE_RE.fullmatch(file):
         return False
     if any(part in ("", ".", "..") for part in file.split("/")):
@@ -159,7 +169,9 @@ def library_entries(library, mood, animal="cat"):
         return []
     return [
         {"key": f"pet:{it['file']}", "file": it["file"], "type": it["type"],
-         "credit": it["credit"].strip(_CREDIT_SPACE), "permission": it["permission"]}
+         "credit": it["credit"].strip(_TRIM_SPACE), "permission": it["permission"],
+         "source": it["source"] if it["permission"] == "licensed" else None,
+         "license": it["license"].strip(_TRIM_SPACE) if it["permission"] == "licensed" else None}
         for it in items if is_library_item(it)
     ]
 

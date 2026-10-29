@@ -49,6 +49,7 @@ const out = {
   petCredit: petCreditLine("Mochi, filmed by the owner"),
   petLibraryFile: JSON.parse(readFileSync(new URL(`../web${PET_LIBRARY_URL}`, import.meta.url), "utf8")),
   petWalks: req.libraryCases.map(libraryWalk),
+  petFileWalks: req.fileWalkCases.map((c) => libraryWalk({ ...c, library: JSON.parse(readFileSync(new URL(`../web${PET_LIBRARY_URL}`, import.meta.url), "utf8")) })),
   alphaSame: rateAdjustedAlpha(0.35, 0.15, 0.15),
   alphaTwoHalves: 1 - (1 - rateAdjustedAlpha(0.35, 0.075, 0.15)) ** 2,
 };

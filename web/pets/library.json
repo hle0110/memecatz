@@ -4,7 +4,16 @@
     "approval": []
   },
   "dog": {
-    "stop": [],
+    "stop": [
+      {
+        "file": "dog/stop-1.webp",
+        "type": "webp",
+        "credit": "KoolShooters on Pexels",
+        "permission": "licensed",
+        "source": "https://www.pexels.com/video/close-up-view-of-a-dog-and-a-person-s-hands-doing-high-five-7682708/",
+        "license": "Pexels License"
+      }
+    ],
     "approval": [],
     "sad": [],
     "suspicious": []

@@ -101,21 +101,29 @@ export function queriesForMood(moodTag, animal = "cat") {
 // The own-pet library. web/pets/library.json is shared with the desktop app,
 // which reads the same file: { cat: { mood: [item, ...] }, dog: { ... } },
 // where an item is { file, type, credit, permission } and file is relative to
-// web/pets/.
+// web/pets/. A "licensed" item also has source (the https page it came from)
+// and license (its name), and its license must allow reuse without asking.
 export const PET_LIBRARY_URL = "/pets/library.json";
 export const PET_LIBRARY_DIR = "/pets/";
 export const PET_TYPES = ["webp", "mp4"];
-export const PET_PERMISSIONS = ["owner", "with permission"];
+export const PET_PERMISSIONS = ["owner", "with permission", "licensed"];
+const PET_SOURCE_RE = /^https:\/\/[A-Za-z0-9._~:\/?#\[\]@!$&'()*+,;=%-]+$/;
 
 // Only ASCII spaces, tabs and line breaks, so the desktop's strip() matches.
-const trimCredit = (text) => text.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
+const trimText = (text) => text.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
 
-// A plain relative path inside web/pets/ that ends in the item's type.
+// A plain relative path inside web/pets/ that ends in the item's type, plus
+// source and license for a licensed item.
 export function isLibraryItem(item) {
   if (!item || typeof item !== "object") return false;
   const { file, type, credit, permission } = item;
   if (!PET_TYPES.includes(type) || !PET_PERMISSIONS.includes(permission)) return false;
-  if (typeof credit !== "string" || !trimCredit(credit)) return false;
+  if (typeof credit !== "string" || !trimText(credit)) return false;
+  if (permission === "licensed") {
+    const { source, license } = item;
+    if (typeof source !== "string" || !PET_SOURCE_RE.test(source)) return false;
+    if (typeof license !== "string" || !trimText(license)) return false;
+  }
   if (typeof file !== "string" || !/^[A-Za-z0-9_][A-Za-z0-9_.\/-]*$/.test(file)) return false;
   if (file.split("/").some((part) => !part || part === "." || part === "..")) return false;
   return file.toLowerCase().endsWith(`.${type}`);
@@ -129,7 +137,9 @@ export function libraryEntries(library, mood, animal = "cat") {
   const items = table && typeof table === "object" ? table[mood] : null;
   if (!Array.isArray(items)) return [];
   return items.filter(isLibraryItem).map((it) => ({
-    key: `pet:${it.file}`, file: it.file, type: it.type, credit: trimCredit(it.credit), permission: it.permission,
+    key: `pet:${it.file}`, file: it.file, type: it.type, credit: trimText(it.credit), permission: it.permission,
+    source: it.permission === "licensed" ? it.source : null,
+    license: it.permission === "licensed" ? trimText(it.license) : null,
   }));
 }
 

@@ -12,5 +12,8 @@ snapshots/
 .wrangler/
 node_modules/
 
+# original pet recordings; only the trimmed clips are committed
+web/pets/source/
+
 # output of the dev/ smoke tests and Giphy audit
 dev/output/
