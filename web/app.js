@@ -1,5 +1,6 @@
 // MemeCatz for the browser. The camera stream never leaves the page. Network
-// calls are for the reaction media (Giphy, or The Cat API / Dog CEO) and for
+// calls are for the reaction media (this site's own-pet library, Giphy, or
+// The Cat API / Dog CEO) and for
 // the MediaPipe and LiteRT runtimes from a CDN.
 
 import { combine, topTags } from "./mood.js";
@@ -7,7 +8,7 @@ import {
   FaceCalibrator, expressionStrengths, neutralStrength, activeOnly,
   classifyGesture, tagsFromGestures, setSensitivity, rateAdjustedAlpha,
 } from "./face.js";
-import { ReactionSource } from "./reactions.js";
+import { ReactionSource, PET_LIBRARY_URL } from "./reactions.js";
 import { captionFor } from "./captions.js";
 import { EmotionDetector } from "./emotion.js";
 import {
@@ -58,6 +59,7 @@ const el = (id) => document.getElementById(id);
 const video = el("webcam");
 const reactionImg = el("reaction");
 const reactionImgNext = el("reaction-next");
+const reactionClip = el("reaction-clip");
 const placeholder = el("placeholder");
 const capTop = el("cap-top");
 const capBottom = el("cap-bottom");
@@ -76,6 +78,11 @@ const attributionEl = el("attribution");
 
 const calibrator = new FaceCalibrator();
 const reactions = new ReactionSource(animalSel ? animalSel.value : "cat");
+// The own-pet library (docs/PET_LIBRARY.md). Without it, Giphy as usual.
+fetch(PET_LIBRARY_URL)
+  .then((res) => (res.ok ? res.json() : null))
+  .then((library) => reactions.setLibrary(library))
+  .catch((err) => console.warn("pet library not loaded:", err && err.message ? err.message : err));
 const emotion = new EmotionDetector();
 
 let vision = null;
@@ -229,20 +236,49 @@ function stopCamera() {
   video.srcObject = null;
 }
 
+// Caption, attribution (or a pet clip's credit) and media change together,
+// once the media is ready.
+function showReactionText(entry, caption) {
+  capTop.textContent = caption.top;
+  capBottom.textContent = caption.bottom;
+  if (attributionEl) attributionEl.textContent = entry.attribution || "";
+  displayedEntry = entry;
+  displayedCaption = caption;
+  placeholder.classList.add("hidden");
+}
+
+function hideClip() {
+  reactionClip.classList.remove("visible");
+  reactionClip.pause();
+}
+
+// Own-pet mp4 clips play muted and looping in their own video element.
+function showClip(entry, caption) {
+  reactionClip.onloadeddata = () => {
+    showReactionText(entry, caption);
+    reactionClip.classList.add("visible");
+    reactionImg.classList.remove("visible");
+    reactionImgNext.classList.remove("visible");
+    reactionClip.play().catch(() => {});
+  };
+  reactionClip.onerror = () => console.warn("pet clip failed to load, keeping the current one");
+  reactionClip.setAttribute("aria-label", entry.name || "a real cat or dog reacting");
+  reactionClip.src = entry.url;
+}
+
 function swapReaction(entry, caption) {
+  if (entry.type === "mp4") {
+    showClip(entry, caption);
+    return;
+  }
   // Crossfade by fading the incoming image in over the outgoing one.
   const incoming = showingPrimary ? reactionImgNext : reactionImg;
   const outgoing = showingPrimary ? reactionImg : reactionImgNext;
   incoming.onload = () => {
-    // Caption, attribution and image change together, once the image is ready.
-    capTop.textContent = caption.top;
-    capBottom.textContent = caption.bottom;
-    if (attributionEl) attributionEl.textContent = entry.attribution || "";
-    displayedEntry = entry;
-    displayedCaption = caption;
+    showReactionText(entry, caption);
     incoming.classList.add("visible");
     outgoing.classList.remove("visible");
-    placeholder.classList.add("hidden");
+    hideClip();
     showingPrimary = !showingPrimary;
   };
   incoming.onerror = () => {
@@ -589,10 +625,14 @@ function takeSnapshot() {
   ctx.fillRect(0, 0, W * 2, H);
   drawCover(ctx, video, video.videoWidth, video.videoHeight, 0, 0, W, H, true);
 
-  const shown = showingPrimary ? reactionImg : reactionImgNext;
+  const clip = !!displayedEntry && displayedEntry.type === "mp4";
+  const shown = clip ? reactionClip : showingPrimary ? reactionImg : reactionImgNext;
+  const sw = clip ? shown.videoWidth : shown.naturalWidth;
+  const sh = clip ? shown.videoHeight : shown.naturalHeight;
+  const ready = clip ? shown.readyState >= 2 : shown.complete;
   let note = "";
-  if (displayedEntry && displayedEntry.cors && shown.complete && shown.naturalWidth) {
-    drawCover(ctx, shown, shown.naturalWidth, shown.naturalHeight, W, 0, W, H);
+  if (displayedEntry && displayedEntry.cors && ready && sw) {
+    drawCover(ctx, shown, sw, sh, W, 0, W, H);
   } else if (displayedEntry) {
     note = "this photo's host does not allow saving it";
   }
@@ -832,6 +872,7 @@ function finishRound(outcome, now) {
   // The previous round's reaction must not stand in for this one.
   reactionImg.classList.remove("visible");
   reactionImgNext.classList.remove("visible");
+  hideClip();
   setText(capTop, "");
   setText(capBottom, "");
   if (attributionEl) attributionEl.textContent = "";
@@ -1006,7 +1047,8 @@ async function saveShareImage() {
   drawText(ctx, `MemeCatz Daily #${run.number}${run.practice ? " (practice)" : ""}`, S / 2, 80, 54, "#f2f3f7", 800);
   drawText(ctx, `${run.passes}/${run.total} · ${formatSeconds(run.totalMs)} s`, S / 2, 170, 84, "#78e08f", 800);
 
-  const idx = bestRoundIndex(run.rounds, (r) => r.entry && r.entry.cors);
+  // A still image only: pet mp4 clips are left out like hosts without CORS.
+  const idx = bestRoundIndex(run.rounds, (r) => r.entry && r.entry.cors && r.entry.type !== "mp4");
   const img = idx >= 0 ? await loadCorsImage(run.rounds[idx].entry.url) : null;
   const withFace = shareFace.checked;
   const faceRound = idx >= 0 ? run.rounds[idx] : run.rounds[bestRoundIndex(run.rounds)];

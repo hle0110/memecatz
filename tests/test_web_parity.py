@@ -23,6 +23,10 @@ import numpy as np  # noqa: E402
 from mood import combine, top_tags, AU_TAG_TO_MOOD  # noqa: E402
 from captions import STATIC_CAPTIONS  # noqa: E402
 from reactions import MOOD_QUERIES, DOG_BREEDS, queries_for_mood  # noqa: E402
+from reactions import (  # noqa: E402
+    PET_LIBRARY_DIR, PET_LIBRARY_PATH, PET_TYPES, PET_PERMISSIONS,
+    library_entries, next_library_item, pet_credit_line, load_pet_library,
+)
 from vision import classify_gesture, GESTURE_TO_TAGS, BLENDSHAPE_NAMES, EmotionDetector, EMOTION_PADDING, EMOTION_OFFSET_X, EMOTION_OFFSET_Y  # noqa: E402
 
 FER = ["angry", "disgust", "fear", "happy", "sad", "surprise", "neutral"]
@@ -77,6 +81,58 @@ def _random_hands(rng, n=600):
     return hands
 
 
+PET_MOODS = ["stop", "approval", "sad", "suspicious", "happy"]
+
+
+def _random_library_item(rng):
+    """Mostly good items, plus every kind of broken one."""
+    if rng.random() < 0.6:
+        name = rng.choice(["dog/a", "dog/b", "cat/c", "d", "cat/e"])
+        kind = rng.choice(PET_TYPES)
+        return {"file": f"{name}.{kind}", "type": kind, "credit": rng.choice(["Mochi", " Luna\n"]),
+                "permission": rng.choice(PET_PERMISSIONS)}
+    item = {
+        "file": rng.choice(["dog/a.webp", "cat/b.mp4", "c.webp", "dog/d.MP4", "../e.webp", "/f.webp",
+                            "dog//g.webp", "h.gif", "dog/i j.webp", "https://x.test/k.webp", 7]),
+        "credit": rng.choice(["Mochi", "  Mochi, filmed by the owner\n", "", " \t", None, "Luna"]),
+        "permission": rng.choice(["owner", "with permission", "owner", "found online", None]),
+    }
+    file = item["file"] if isinstance(item["file"], str) else ""
+    item["type"] = rng.choice([file.rsplit(".", 1)[-1].lower(), "webp", "mp4", "gif", 3])
+    if rng.random() < 0.1:
+        del item[rng.choice(list(item))]
+    return item if rng.random() > 0.05 else rng.choice([None, "dog/a.webp", [], 5])
+
+
+def _random_library_cases(rng, n=300):
+    cases = []
+    for _ in range(n):
+        library = {}
+        for animal in ("cat", "dog"):
+            if rng.random() < 0.9:
+                library[animal] = {m: [_random_library_item(rng) for _ in range(rng.randint(0, 4))]
+                                   for m in PET_MOODS if rng.random() < 0.7}
+        if rng.random() < 0.05:
+            library = rng.choice([None, [], "x", {"cat": []}, {"dog": {"stop": "dog/a.webp"}}])
+        cases.append({"library": library, "animal": rng.choice(["cat", "dog"]),
+                      "steps": [rng.choice(PET_MOODS) for _ in range(rng.randint(1, 8))]})
+    return cases
+
+
+def _library_walk(case):
+    """The desktop side of libraryWalk in web_dump.mjs."""
+    cursor, on_screen, out = {}, None, []
+    for mood in case["steps"]:
+        item, nxt = next_library_item(library_entries(case["library"], mood, case["animal"]), cursor.get(mood, 0), on_screen)
+        if item is None:
+            out.append("giphy")
+            continue
+        cursor[mood] = nxt
+        on_screen = item["key"]
+        out.append(item)
+    return out
+
+
 def _run_node(request):
     proc = subprocess.run(
         ["node", os.path.join(ROOT, "tests", "web_dump.mjs")],
@@ -93,7 +149,9 @@ def main():
     hands = _random_hands(rng)
     boxes = [[rng.randint(-30, 600), rng.randint(-30, 440), rng.randint(20, 300), rng.randint(20, 300)] for _ in range(300)]
     pixels = [[rng.randint(0, 255) for _ in range(3)] for _ in range(2000)]
-    js = _run_node({"moodCases": mood_cases, "gestureCases": hands, "boxes": boxes, "pixels": pixels})
+    library_cases = _random_library_cases(rng)
+    js = _run_node({"moodCases": mood_cases, "gestureCases": hands, "boxes": boxes, "pixels": pixels,
+                    "libraryCases": library_cases})
     failures = []
 
     def check(name, ok, detail=""):
@@ -157,6 +215,25 @@ def main():
 
     check("time-scaled smoothing keeps the reference rate", abs(js["alphaSame"] - 0.35) < 1e-12)
     check("two half steps equal one full step", abs(js["alphaTwoHalves"] - 0.35) < 1e-12)
+
+    web_library = os.path.normpath(os.path.join(ROOT, "web", js["petLibraryUrl"].lstrip("/")))
+    check("both apps read the same pet library file", os.path.normpath(PET_LIBRARY_PATH) == web_library,
+          f"{PET_LIBRARY_PATH} vs {web_library}")
+    check("pet clips live in the same folder",
+          os.path.normpath(PET_LIBRARY_DIR) == os.path.normpath(os.path.join(ROOT, "web", js["petLibraryDir"].strip("/"))))
+    check("pet library file reads the same", load_pet_library() == js["petLibraryFile"])
+    check("pet item types and permissions identical",
+          list(PET_TYPES) == js["petTypes"] and list(PET_PERMISSIONS) == js["petPermissions"])
+    check("pet credit line identical", pet_credit_line("Mochi, filmed by the owner") == js["petCredit"])
+    walks = [_library_walk(c) for c in library_cases]
+    bad = sum(1 for a, b in zip(walks, js["petWalks"]) if a != b)
+    used = sum(1 for w in walks for step in w if step != "giphy")
+    fallbacks = sum(1 for w in walks for step in w if step == "giphy")
+    check(f"pet library lookup and Giphy fallback identical on {len(walks)} random libraries "
+          f"({used} library picks, {fallbacks} fallbacks)", bad == 0, f"{bad} differ")
+    real = load_pet_library()
+    real_walk = {"library": real, "animal": "dog", "steps": PET_MOODS}
+    check("the checked-in library falls back to Giphy for every mood", _library_walk(real_walk) == ["giphy"] * len(PET_MOODS))
 
     with open(os.path.join(ROOT, "worker.js")) as handle:
         worker = handle.read()

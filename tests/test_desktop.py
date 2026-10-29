@@ -189,6 +189,58 @@ def test_giphy_rotates_phrases_with_depth_limits():
     assert all(c["offset"] == 0 for c in calls)
 
 
+def _pet_library_folder(folder):
+    """A pet folder with one animated WebP and one mp4, made from plain test frames."""
+    import cv2
+    os.makedirs(os.path.join(folder, "dog"))
+    frames = [Image.new("RGB", (48, 32), (i * 40, 90, 150)) for i in range(4)]
+    frames[0].save(os.path.join(folder, "dog", "stop-1.webp"), format="WEBP", save_all=True,
+                   append_images=frames[1:], duration=100, loop=0)
+    writer = cv2.VideoWriter(os.path.join(folder, "dog", "stop-2.mp4"), cv2.VideoWriter_fourcc(*"mp4v"), 20, (48, 32))
+    for i in range(30):
+        writer.write(np.full((32, 48, 3), i * 8, dtype=np.uint8))
+    writer.release()
+    item = {"credit": "Mochi, filmed by the owner", "permission": "owner"}
+    return {"dog": {
+        "stop": [dict(item, file="dog/stop-1.webp", type="webp"), dict(item, file="dog/stop-2.mp4", type="mp4")],
+        "sad": [dict(item, file="dog/missing.webp", type="webp")],
+    }}
+
+
+def test_pet_library_comes_first_then_giphy():
+    import tempfile
+    import reactions
+    with tempfile.TemporaryDirectory() as folder:
+        pets = os.path.join(folder, "pets")
+        library = _pet_library_folder(pets)
+        real_dir = reactions.PET_LIBRARY_DIR
+        reactions.PET_LIBRARY_DIR = pets
+        try:
+            source = reactions.ReactionSource(os.path.join(folder, "cache"), animal="dog")
+            source.pet_library = library
+            giphy_moods = []
+            source.dataset.take_for_mood = lambda mood, exclude_key=None: giphy_moods.append(mood)
+            source.dataset.get_general = lambda: []
+            first, second, third = source.pick(["stop"]), source.pick(["stop"]), source.pick(["stop"], exclude_key="pet:dog/stop-1.webp")
+            missing = source.pick(["sad"])
+        finally:
+            reactions.PET_LIBRARY_DIR = real_dir
+    assert [first["key"], second["key"], third["key"]] == ["pet:dog/stop-1.webp", "pet:dog/stop-2.mp4", "pet:dog/stop-2.mp4"]
+    assert first["source"] == "pet_library" and first["attribution"] == "Pet clip: Mochi, filmed by the owner"
+    assert len(first["frames"]) == 4 and abs(sum(first["durations"]) - 0.4) < 1e-6
+    assert second["frames"] and len(second["frames"]) <= GIPHY_MAX_FRAMES and abs(sum(second["durations"]) - 1.5) < 1e-6
+    assert giphy_moods == ["sad"], "only the mood whose library file is missing asks Giphy"
+    assert missing["source"] == "unavailable"
+
+
+def test_checked_in_pet_library_starts_empty():
+    import reactions
+    library = reactions.load_pet_library()
+    assert sorted(library["cat"]) == ["approval", "stop"]
+    assert sorted(library["dog"]) == ["approval", "sad", "stop", "suspicious"]
+    assert not any(reactions.library_entries(library, m, a) for a in ("cat", "dog") for m in library[a])
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for test in tests:

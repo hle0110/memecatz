@@ -1,6 +1,9 @@
-// Real reactions from two kinds of source, in order of preference:
+// Real reactions from three kinds of source, in order of preference:
 //
-//   1. Giphy, mood matched. The page asks this site's /api/config for the
+//   0. The own-pet library, mood matched: clips of the owner's own pets, or of
+//      pets filmed with permission, served from this site under /pets/. A
+//      mood with library items never searches Giphy. See docs/PET_LIBRARY.md.
+//   1. Giphy, mood matched, for every mood the library does not cover. The page asks this site's /api/config for the
 //      Giphy key, then calls Giphy directly from the browser, which is what
 //      Giphy's integration rules require. Results are used in the order Giphy
 //      returns them, nothing is filtered out or stored beyond this page visit.
@@ -95,6 +98,71 @@ export function queriesForMood(moodTag, animal = "cat") {
   return table[moodTag] || [[`${moodTag.replace(/_/g, " ")} ${animal}`, 8]];
 }
 
+// The own-pet library. web/pets/library.json is shared with the desktop app,
+// which reads the same file: { cat: { mood: [item, ...] }, dog: { ... } },
+// where an item is { file, type, credit, permission } and file is relative to
+// web/pets/.
+export const PET_LIBRARY_URL = "/pets/library.json";
+export const PET_LIBRARY_DIR = "/pets/";
+export const PET_TYPES = ["webp", "mp4"];
+export const PET_PERMISSIONS = ["owner", "with permission"];
+
+// Only ASCII spaces, tabs and line breaks, so the desktop's strip() matches.
+const trimCredit = (text) => text.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
+
+// A plain relative path inside web/pets/ that ends in the item's type.
+export function isLibraryItem(item) {
+  if (!item || typeof item !== "object") return false;
+  const { file, type, credit, permission } = item;
+  if (!PET_TYPES.includes(type) || !PET_PERMISSIONS.includes(permission)) return false;
+  if (typeof credit !== "string" || !trimCredit(credit)) return false;
+  if (typeof file !== "string" || !/^[A-Za-z0-9_][A-Za-z0-9_.\/-]*$/.test(file)) return false;
+  if (file.split("/").some((part) => !part || part === "." || part === "..")) return false;
+  return file.toLowerCase().endsWith(`.${type}`);
+}
+
+// The usable library items for a mood, in file order. A malformed item is
+// left out, so a typo in the file never shows a broken reaction. An empty
+// list means the mood uses Giphy.
+export function libraryEntries(library, mood, animal = "cat") {
+  const table = library && typeof library === "object" ? library[animal === "dog" ? "dog" : "cat"] : null;
+  const items = table && typeof table === "object" ? table[mood] : null;
+  if (!Array.isArray(items)) return [];
+  return items.filter(isLibraryItem).map((it) => ({
+    key: `pet:${it.file}`, file: it.file, type: it.type, credit: trimCredit(it.credit), permission: it.permission,
+  }));
+}
+
+// The library items take turns. Returns [item, nextCursor], skipping
+// excludeKey when another item exists, or [null, cursor] for no items.
+export function nextLibraryItem(entries, cursor, excludeKey = null) {
+  const n = entries.length;
+  if (!n) return [null, cursor];
+  for (let i = 0; i < n; i++) {
+    const idx = (cursor + i) % n;
+    if (entries[idx].key !== excludeKey) return [entries[idx], idx + 1];
+  }
+  const idx = cursor % n;
+  return [entries[idx], idx + 1];
+}
+
+// The credit shown under a library item, the same text on desktop.
+export function petCreditLine(credit) {
+  return `Pet clip: ${credit}`;
+}
+
+export function libraryReaction(item, mood, animal) {
+  return {
+    key: item.key,
+    url: PET_LIBRARY_DIR + item.file,
+    type: item.type,
+    name: `${mood} ${animal} reaction`,
+    attribution: petCreditLine(item.credit),
+    source: "pet_library",
+    cors: true,
+  };
+}
+
 // One Giphy result -> entry, or null if it has no usable image. The URL is
 // used exactly as Giphy returns it. WebP is Giphy's smaller animated rendition
 // and every current browser shows it in an <img>; the GIF is the fallback.
@@ -121,6 +189,7 @@ export class ReactionSource {
     this.configRetryAt = 0;
     this.giphyAvailable = null;    // unknown until the first search answers
     this.giphyTroubleAt = 0;       // last failed Giphy request (rate limit, outage)
+    this.library = null;           // web/pets/library.json, once loaded
     this._reset();
   }
 
@@ -131,6 +200,23 @@ export class ReactionSource {
     this.failedAt = {};
     this.inflight = new Set();
     this.seen = new Set();
+    this.libraryCursor = {};       // mood -> which library item is next
+  }
+
+  setLibrary(library) {
+    this.library = library && typeof library === "object" ? library : null;
+    this.libraryCursor = {};
+  }
+
+  _libraryFor(mood) {
+    return libraryEntries(this.library, mood, this.animal);
+  }
+
+  _takeLibrary(mood, excludeKey) {
+    const [item, cursor] = nextLibraryItem(this._libraryFor(mood), this.libraryCursor[mood] || 0, excludeKey);
+    if (!item) return null;
+    this.libraryCursor[mood] = cursor;
+    return libraryReaction(item, mood, this.animal);
   }
 
   setAnimal(animal) {
@@ -274,6 +360,7 @@ export class ReactionSource {
   warm(moods) {
     if (this.giphyAvailable !== false) {
       for (const m of moods) {
+        if (this._libraryFor(m).length) continue;
         if ((this.moodQueues[m] || []).length < MIN_POOL) this._fetchGiphy(m);
       }
     }
@@ -281,24 +368,26 @@ export class ReactionSource {
     if (photosNeeded && this.generalPool.length < MIN_POOL) this._fetchGeneral();
   }
 
-  // Next entry for the strongest mood that has one. Giphy results come out in
-  // the order Giphy ranked them. Returns null while everything is loading.
+  // Next entry for the strongest mood that has one: the pet library for that
+  // mood first, else Giphy. Giphy results come out in the order Giphy ranked
+  // them. Returns null while everything is loading.
   pick(moods, excludeKey = null) {
     this.warm(moods);
 
-    if (this.giphyAvailable !== false) {
-      for (const m of moods) {
-        const queue = this.moodQueues[m] || [];
-        const idx = queue.findIndex((e) => e.key !== excludeKey);
-        if (idx >= 0) {
-          const [chosen] = queue.splice(idx, 1);
-          this.seen.add(chosen.key);
-          return chosen;
-        }
+    for (const m of moods) {
+      const own = this._takeLibrary(m, excludeKey);
+      if (own) return own;
+      if (this.giphyAvailable === false) continue;
+      const queue = this.moodQueues[m] || [];
+      const idx = queue.findIndex((e) => e.key !== excludeKey);
+      if (idx >= 0) {
+        const [chosen] = queue.splice(idx, 1);
+        this.seen.add(chosen.key);
+        return chosen;
       }
-      // While Giphy works, wait for its next batch instead of mixing sources.
-      if (this.giphyAvailable === true && !this._giphyTroubled()) return null;
     }
+    // While Giphy works, wait for its next batch instead of mixing sources.
+    if (this.giphyAvailable === true && !this._giphyTroubled()) return null;
 
     let candidates = this.generalPool.filter((e) => e.key !== excludeKey);
     if (!candidates.length) candidates = this.generalPool;
