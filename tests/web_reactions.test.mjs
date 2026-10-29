@@ -173,6 +173,22 @@ test("library items must be well formed", () => {
   assert.deepEqual(nextLibraryItem([], 3), [null, 3]);
 });
 
+test("a licensed clip needs its source page and license", () => {
+  const lic = { source: "https://www.pexels.com/video/dog-giving-a-high-five-123/", license: "Pexels License" };
+  const item = clip("dog/stop-1.webp", { permission: "licensed", credit: "Jane Doe on Pexels", ...lic });
+  assert.ok(isLibraryItem(item));
+  const [entry] = libraryEntries({ dog: { stop: [{ ...item, license: " Pexels License\n" }] } }, "stop", "dog");
+  assert.equal(entry.source, lic.source);
+  assert.equal(entry.license, "Pexels License");
+  for (const bad of [
+    { source: undefined }, { source: "http://www.pexels.com/video/1/" }, { source: "https://x.test/a b" },
+    { source: "javascript:alert(1)" }, { license: "" }, { license: " \t" }, { license: undefined },
+  ]) assert.equal(isLibraryItem({ ...item, ...bad }), false, JSON.stringify(bad));
+  const own = libraryEntries({ dog: { stop: [clip("dog/s.webp", lic)] } }, "stop", "dog")[0];
+  assert.equal(own.source, null, "source and license only matter for licensed clips");
+  assert.equal(own.license, null);
+});
+
 test("the checked-in library parses, and every item is valid, present and under 500 KB", () => {
   const lib = JSON.parse(readFileSync(new URL("../web/pets/library.json", import.meta.url), "utf8"));
   assert.deepEqual(Object.keys(lib.cat).sort(), ["approval", "stop"]);

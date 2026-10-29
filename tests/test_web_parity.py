@@ -89,13 +89,20 @@ def _random_library_item(rng):
     if rng.random() < 0.6:
         name = rng.choice(["dog/a", "dog/b", "cat/c", "d", "cat/e"])
         kind = rng.choice(PET_TYPES)
-        return {"file": f"{name}.{kind}", "type": kind, "credit": rng.choice(["Mochi", " Luna\n"]),
+        item = {"file": f"{name}.{kind}", "type": kind, "credit": rng.choice(["Mochi", " Luna\n"]),
                 "permission": rng.choice(PET_PERMISSIONS)}
+        if item["permission"] == "licensed" or rng.random() < 0.2:
+            item["source"] = rng.choice(["https://www.pexels.com/video/dog-high-five-123/", "https://pixabay.com/videos/id-9/",
+                                         "http://x.test/a", "https://x.test/a b", "https://x.test/\u00e9", "", 5])
+            item["license"] = rng.choice(["Pexels License", " CC0\t", "", " ", None])
+            if rng.random() < 0.1:
+                del item[rng.choice(["source", "license"])]
+        return item
     item = {
         "file": rng.choice(["dog/a.webp", "cat/b.mp4", "c.webp", "dog/d.MP4", "../e.webp", "/f.webp",
                             "dog//g.webp", "h.gif", "dog/i j.webp", "https://x.test/k.webp", 7]),
         "credit": rng.choice(["Mochi", "  Mochi, filmed by the owner\n", "", " \t", None, "Luna"]),
-        "permission": rng.choice(["owner", "with permission", "owner", "found online", None]),
+        "permission": rng.choice(["owner", "with permission", "licensed", "found online", None]),
     }
     file = item["file"] if isinstance(item["file"], str) else ""
     item["type"] = rng.choice([file.rsplit(".", 1)[-1].lower(), "webp", "mp4", "gif", 3])

@@ -1,6 +1,6 @@
 # Pet library
 
-Every clip in the pet library is a real recording of your own pet, or of someone else's pet filmed with the owner's permission. Never generated, drawn, cartoon or 3D, never people, and never media saved from Giphy or any other site.
+Every clip in the pet library is a real recording of a real cat or dog: your own pet, someone else's pet filmed with the owner's permission, or a clip published under a license that allows reuse without asking. Never generated, drawn, cartoon or 3D, never people, and never media saved from Giphy, Tenor, social media or any other site whose license does not allow it.
 
 The library fills moods where Giphy has few good results (stop, approval, and for dogs sad and suspicious). A mood with at least one valid library item always shows library items and never searches Giphy. Every other mood uses Giphy exactly as before.
 
@@ -10,7 +10,7 @@ The library fills moods where Giphy has few good results (stop, approval, and fo
 
 ## Adding a clip
 
-1. Put the original recording in `web/pets/source/`, which git ignores, so originals are never committed or published. Trim it to 2 to 4 seconds of the pet clearly showing the mood. No people in the frame.
+1. Put the original recording (your own, or a licensed download, see below) in `web/pets/source/`, which git ignores, so originals are never committed or published. Trim it to 2 to 4 seconds of the pet clearly showing the mood. No people in the frame.
 2. Convert it to animated WebP, about 480 px wide, under 500 KB. Homebrew's ffmpeg has no WebP encoder, so this takes two steps: ffmpeg writes the frames, then `img2webp` (from `brew install webp`) joins them into a looping WebP:
 
    ```
@@ -35,6 +35,13 @@ The library fills moods where Giphy has few good results (stop, approval, and fo
    { "file": "dog/stop-1.webp", "type": "webp", "credit": "Mochi, filmed by Hieu", "permission": "owner" }
    ```
 
+   A licensed clip also names its page and license:
+
+   ```json
+   { "file": "dog/stop-2.webp", "type": "webp", "credit": "Jane Doe on Pexels", "permission": "licensed",
+     "source": "https://www.pexels.com/video/...", "license": "Pexels License" }
+   ```
+
 5. Run `node --test tests/web_reactions.test.mjs` and `python tests/test_web_parity.py`. The first one fails if an item is malformed, its file is missing, or the file is 500 KB or more.
 
 Items for a mood take turns in the order they are listed, and the one on screen is skipped when there is another.
@@ -46,10 +53,18 @@ Items for a mood take turns in the order they are listed, and the one on screen 
 | `file` | Path inside `web/pets/`, such as `dog/stop-1.webp`. Letters, digits, `_`, `-`, `.` and `/` only, no `..`, and it must end in `.webp` or `.mp4` to match `type`. |
 | `type` | `webp` or `mp4`. |
 | `credit` | Who the pet is and who filmed it. Shown as "Pet clip: ..." on the reaction, in snapshots and in the share image. |
-| `permission` | `owner` when it is your pet, `with permission` when the owner agreed to its use on this site. |
+| `permission` | `owner` when it is your pet, `with permission` when the owner agreed to its use on this site, `licensed` when the clip was published under a license that allows reuse. |
+| `source` | Licensed clips only: the `https` page the clip was downloaded from. |
+| `license` | Licensed clips only: the license's name, such as `Pexels License`, `Pixabay Content License` or `CC0`. |
 
 An item that breaks any of these rules is ignored by both apps.
 
 ## The permission rule
 
-Only add a clip when you own the pet or the owner has said yes to this use, and record which one in `permission`. If an owner later asks for a clip to be removed, delete its file and its item in the same change.
+Only add a clip when one of these is true, and record which in `permission`:
+
+1. `owner`: the pet is yours and you filmed it.
+2. `with permission`: the owner said yes to this use on this site.
+3. `licensed`: the clip's page shows a license that allows free reuse and editing without asking, such as the Pexels License, the Pixabay Content License or CC0. CC BY also works if `credit` names the creator as the license asks. Not allowed: "editorial use only", "no derivatives" or "non-commercial" licenses, clips with no license shown, and anything from Giphy, Tenor or social media.
+
+For a licensed clip, open its page, read the license there, and check the clip yourself: a real cat or dog, no people, nothing generated or edited to look real. Name the creator and site in `credit` even when the license does not require it. If an owner or creator later asks for a clip to be removed, delete its file and its item in the same change.
