@@ -1,0 +1,23 @@
+# Weekly checks for newer Python packages (requirements.txt and
+# requirements-identity.txt) and GitHub Actions versions in CI. Minor and
+# patch updates come grouped in one pull request per ecosystem. The page's
+# CDN imports in web/ (MediaPipe, LiteRT) are pinned in the code and are not
+# covered here; check those by hand.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns: ["*"]
