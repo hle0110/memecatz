@@ -4,7 +4,7 @@
 # or older there. The app uses the API both versions share.
 opencv-contrib-python>=4.8,<5
 mediapipe>=0.10.21,<0.11
-numpy>=1.23
+numpy>=2.5.4
 
 # Runs the bundled emotion model. ai-edge-litert is about 15MB and covers
 # Apple Silicon Macs, Windows and Linux. Python 3.9 and Intel Macs have no
