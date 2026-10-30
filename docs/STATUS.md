@@ -20,6 +20,11 @@ Cloudflare settings: the secret `GIPHY_API_KEY` is set and confirmed working (th
 2. Check the dog stop clip on the live site with a real camera: it plays and loops in the reaction panel, the "Pet clip: KoolShooters on Pexels" credit shows, and other moods still show Giphy.
 3. The Cloudflare build variable `SKIP_DEPENDENCY_INSTALL` = `1` is not confirmed.
 4. The Giphy production key is still pending; the beta key allows 100 calls an hour for everyone.
+5. Repository settings to decide: branch protection on `main` (require a pull request and passing checks, but no required review, since the owner merges their own PRs), automatic deletion of merged branches, and Dependabot security alerts.
+
+## Maintenance
+
+Dependabot (`.github/dependabot.yml`, PR #6) checks the Python packages and the GitHub Actions in CI every week. It opens its pull requests as dependabot[bot]; to keep every commit on `main` authored by hle0110, its updates are re-applied on a hle0110 branch rather than merged directly. The CDN imports in `web/` are not covered and need a manual check. Merged branches were deleted on October 30. Pet clips have automatic checks and a preview sheet (`dev/pet_clips.py`, see `docs/PET_LIBRARY.md`); the dog stop clip passes them, with a visible loop seam (4.6x) because a high five cannot loop smoothly.
 
 ## Daily challenge
 

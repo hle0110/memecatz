@@ -42,7 +42,29 @@ The library fills moods where Giphy has few good results (stop, approval, and fo
      "source": "https://www.pexels.com/video/...", "license": "Pexels License" }
    ```
 
-5. Run `node --test tests/web_reactions.test.mjs` and `python tests/test_web_parity.py`. The first one fails if an item is malformed, its file is missing, or the file is 500 KB or more.
+5. Run `python dev/pet_clips.py --preview`. It checks every clip and redraws `docs/pet_library_preview.png`; commit the new preview with the clip.
+6. Run `node --test tests/web_reactions.test.mjs`, `python tests/test_desktop.py` and `python tests/test_web_parity.py`. They fail if an item is malformed or its file is missing, if a clip breaks the limits below, or if the preview is out of date.
+
+## Clip checks
+
+`dev/pet_clips.py` (also run by `tests/test_desktop.py`) fails a clip that is:
+
+| Check | Limit |
+|---|---|
+| Width | 360 to 640 px (aim for 480) |
+| Height | 640 px or less |
+| Length | 2 to 4 s |
+| Frame rate | 10 to 30 fps |
+| File size | under 500 KB |
+| WebP loop count | 0, so it loops forever |
+
+It also reports the loop seam: how far the last frame is from the first, compared with a normal step between frames. Above 3x the jump back to the start is visible. That never fails a clip, because some moods (a high five) cannot loop smoothly, but a smaller seam looks better; trimming so the clip ends close to how it starts helps.
+
+## Preview
+
+Every clip at a glance, first, middle and last frame, with its numbers and credit:
+
+![Every clip in the pet library](pet_library_preview.png)
 
 Items for a mood take turns in the order they are listed, and the one on screen is skipped when there is another.
 
