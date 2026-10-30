@@ -233,19 +233,60 @@ def test_pet_library_comes_first_then_giphy():
     assert missing["source"] == "unavailable"
 
 
-def test_checked_in_pet_library_loads():
+def _pet_clips():
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "dev"))
+    import pet_clips
+    return pet_clips
+
+
+def test_checked_in_pet_library_passes_clip_checks():
     import reactions
+    pet_clips = _pet_clips()
     library = reactions.load_pet_library()
     assert sorted(library["cat"]) == ["approval", "stop"]
     assert sorted(library["dog"]) == ["approval", "sad", "stop", "suspicious"]
+    rows = []
     for animal in ("cat", "dog"):
         for mood, items in library[animal].items():
-            entries = reactions.library_entries(library, mood, animal)
-            assert len(entries) == len(items), f"{animal} {mood} has a malformed item"
-            for entry in entries:
-                frames, durations = reactions.load_pet_media(entry)
-                assert frames, f"{entry['file']} does not decode"
-                assert 2.0 <= sum(durations) <= 4.0 or len(frames) == 1, f"{entry['file']} runs {sum(durations):.1f} s"
+            assert len(reactions.library_entries(library, mood, animal)) == len(items), f"{animal} {mood} has a malformed item"
+    for animal, mood, entry in pet_clips.library_clips(library):
+        info = pet_clips.measure(entry)
+        assert not pet_clips.problems(entry, info), pet_clips.problems(entry, info)
+        assert reactions.load_pet_media(entry)[0], f"{entry['file']} does not play"
+        rows.append((animal, mood, entry, info))
+    with Image.open(pet_clips.PREVIEW_PATH) as preview:
+        shown = preview.text.get("clips")
+    assert shown == pet_clips.clip_list(rows), "docs/pet_library_preview.png is stale: run python dev/pet_clips.py --preview"
+
+
+def test_clip_checks_catch_bad_clips():
+    import tempfile
+    import reactions
+    pet_clips = _pet_clips()
+
+    def webp(folder, name, size, count, ms, loop):
+        frames = [Image.new("RGB", size, (i * 9 % 256, 60, 120)) for i in range(count)]
+        frames[0].save(os.path.join(folder, name), format="WEBP", save_all=True, append_images=frames[1:], duration=ms, loop=loop)
+        return {"file": name, "type": "webp", "key": f"pet:{name}", "credit": "x", "permission": "owner"}
+
+    with tempfile.TemporaryDirectory() as folder:
+        real_dir = reactions.PET_LIBRARY_DIR
+        reactions.PET_LIBRARY_DIR = folder
+        try:
+            good = webp(folder, "good.webp", (480, 270), 45, 67, 0)
+            assert pet_clips.problems(good, pet_clips.measure(good)) == []
+            cases = {
+                "wide.webp": ((1280, 720), 45, 67, 0, "width 1280"),
+                "short.webp": ((480, 270), 10, 67, 0, " s long"),
+                "slow.webp": ((480, 270), 12, 250, 0, " fps"),
+                "once.webp": ((480, 270), 45, 67, 1, "loop count 1"),
+            }
+            for name, (size, count, ms, loop, expected) in cases.items():
+                entry = webp(folder, name, size, count, ms, loop)
+                found = pet_clips.problems(entry, pet_clips.measure(entry))
+                assert any(expected in p for p in found), (name, found)
+        finally:
+            reactions.PET_LIBRARY_DIR = real_dir
 
 
 def main():
