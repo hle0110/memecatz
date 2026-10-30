@@ -24,7 +24,7 @@ Cloudflare settings: the secret `GIPHY_API_KEY` is set and confirmed working (th
 
 ## Maintenance
 
-Dependabot (`.github/dependabot.yml`, PR #6) checks the Python packages and the GitHub Actions in CI every week. It opens its pull requests as dependabot[bot]; to keep every commit on `main` authored by hle0110, its updates are re-applied on a hle0110 branch rather than merged directly. The CDN imports in `web/` are not covered and need a manual check. Merged branches were deleted on October 30. Pet clips have automatic checks and a preview sheet (`dev/pet_clips.py`, see `docs/PET_LIBRARY.md`); the dog stop clip passes them, with a visible loop seam (4.6x) because a high five cannot loop smoothly.
+Dependabot (`.github/dependabot.yml`, PRs #6 and #13) checks the GitHub Actions in CI every week, and for Python packages sends security updates only: its first routine bumps (PRs #7 to #11, closed) raised minimum versions, which failed CI on Python 3.10 and would have dropped Intel Macs. Security updates need Dependabot alerts turned on in the repository settings. It opens its pull requests as dependabot[bot]; to keep every commit on `main` authored by hle0110, its updates are re-applied on a hle0110 branch rather than merged directly. The CDN imports in `web/` are not covered and need a manual check. Merged branches were deleted on October 30. Pet clips have automatic checks and a preview sheet (`dev/pet_clips.py`, see `docs/PET_LIBRARY.md`); the dog stop clip passes them, with a visible loop seam (4.6x) because a high five cannot loop smoothly.
 
 ## Daily challenge
 
