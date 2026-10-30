@@ -3,7 +3,7 @@
 # and 3.14. Intel Macs only have builds up to 0.10.21, which needs Python 3.12
 # or older there. The app uses the API both versions share.
 opencv-contrib-python>=4.8,<5
-mediapipe>=0.10.21,<0.11
+mediapipe>=1.1.1,<1.2
 numpy>=1.23
 
 # Runs the bundled emotion model. ai-edge-litert is about 15MB and covers
