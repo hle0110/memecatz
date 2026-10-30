@@ -17,7 +17,7 @@ Cloudflare settings: the secret `GIPHY_API_KEY` is set and confirmed working (th
 ## Open
 
 1. Five starter moods have no clips yet: cat stop, cat approval, dog approval, dog sad, dog suspicious.
-2. Check the dog stop clip on the live site with a real camera: it plays and loops in the reaction panel, the "Pet clip: KoolShooters on Pexels" credit shows, and other moods still show Giphy.
+2. Check the dog stop clip on the live site with a real camera and a real open palm. With a fake camera (below) it already plays in the reaction panel with its credit.
 3. The Cloudflare build variable `SKIP_DEPENDENCY_INSTALL` = `1` is not confirmed.
 4. The Giphy production key is still pending; the beta key allows 100 calls an hour for everyone.
 5. Repository settings to decide: branch protection on `main` (require a pull request and passing checks, but no required review, since the owner merges their own PRs), automatic deletion of merged branches, and Dependabot security alerts.
@@ -30,9 +30,13 @@ Dependabot (`.github/dependabot.yml`, PRs #6 and #13) checks the GitHub Actions 
 
 Web only, launched October 4, 2026 (`LAUNCH_DATE`, Daily #1), in `web/challenge.js`, wired into `web/app.js`, see `docs/ARCHITECTURE.md`. Face rounds score from the face alone and gesture rounds from the classified hand shape, so a fist cannot pass "Look angry!" and a smile cannot pass a hand round. Best result counts official runs only. Tested with the Node tests and the headless smoke runs in `docs/TESTING.md`: gesture and smile rounds pass, misses name the detected mood, official versus practice, reload keeps the streak, Skip, switching mode or pressing Stop mid run, blocked storage, the share image with and without the face, and The Cat API photos left out of the image. Not tested: any of it with a real face (in particular whether surprise, angry, sad and poker face are comfortable to reach within 6 seconds), the Copy button against a real clipboard, phones and Safari.
 
+## Smoke runs on October 30
+
+Against the live site at `19ff313`, with the fake camera from `dev/make_test_media.py`. Desktop (`--mock-giphy`): 347 frames at about 14 fps, searches followed the video's moods, snapshot saved. Browser free play (`--mock-giphy`): emotion model on, moods and Giphy searches followed the video, only the expected WebGPU warnings. Browser Daily challenge (`--mock-giphy --challenge`): the first four rounds passed in 0.9 s, "Look angry!" missed with "you looked happy instead", share image saved, no page problems; this is the first real-page run of the PR #2 frame loop. Dog stop clip: a fake camera frame with the test face and an open hand made the live page show `/pets/dog/stop-1.webp` in the reaction panel with the "Pet clip: KoolShooters on Pexels" credit and the stop caption, with no page errors.
+
 ## Never tested
 
-A real webcam with a real face, real phones, Safari, Windows, and Intel Macs. PRs #2 to #4 were checked with the unit, desktop and parity tests only: the browser and desktop smoke runs were not run for them (Playwright and the test video were not set up), so the reworked frame loop, the pet clip on screen in either app, mp4 clips in a browser, and the new screen reader behavior have not been seen live. Everything else was tested with a fake camera video (see `docs/TESTING.md`). Firefox was checked only for loading and the security policy, because its fake camera has no face.
+A real webcam with a real face, real phones, Safari, Windows, and Intel Macs. Also never seen: an mp4 pet clip in a browser (the library has none), and the new screen reader behavior with a real screen reader. Everything else was tested with a fake camera video (see `docs/TESTING.md`). Firefox was checked only for loading and the security policy, because its fake camera has no face.
 
 ## Known limits
 

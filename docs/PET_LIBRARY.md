@@ -45,6 +45,8 @@ The library fills moods where Giphy has few good results (stop, approval, and fo
 5. Run `python dev/pet_clips.py --preview`. It checks every clip and redraws `docs/pet_library_preview.png`; commit the new preview with the clip.
 6. Run `node --test tests/web_reactions.test.mjs`, `python tests/test_desktop.py` and `python tests/test_web_parity.py`. They fail if an item is malformed or its file is missing, if a clip breaks the limits below, or if the preview is out of date.
 
+Items for a mood take turns in the order they are listed, and the one on screen is skipped when there is another. If the top mood has no clip and no Giphy result is ready, the next-ranked mood's clip can show, the same way a lower mood's Giphy result can.
+
 ## Clip checks
 
 `dev/pet_clips.py` (also run by `tests/test_desktop.py`) fails a clip that is:
@@ -65,8 +67,6 @@ It also reports the loop seam: how far the last frame is from the first, compare
 Every clip at a glance, first, middle and last frame, with its numbers and credit:
 
 ![Every clip in the pet library](pet_library_preview.png)
-
-Items for a mood take turns in the order they are listed, and the one on screen is skipped when there is another.
 
 ## Fields
 
